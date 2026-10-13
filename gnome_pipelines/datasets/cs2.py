@@ -152,8 +152,6 @@ ROUND_FEATURES = TableSpec(
     pa.schema([
         pa.field("match_id", pa.int64(), nullable=False),
         pa.field("map_name", pa.string(), nullable=False),
-        pa.field("team_ct_name", pa.string()),
-        pa.field("team_t_name", pa.string()),
         pa.field("round_number", pa.int64()),
         pa.field("ct_equip_value", pa.float64()),
         pa.field("t_equip_value", pa.float64()),
@@ -328,5 +326,49 @@ PREMATCH_PREDICTIONS = TableSpec(
     partition_by=("generated_at", "day"),
 )
 
+PREMATCH_PREDICTION_INPUTS = TableSpec(
+    "cs2_prematch_prediction_inputs",
+    pa.schema([*MATCH_PRIORS.schema, pa.field("generated_at", pa.timestamp("us", tz="UTC"), nullable=False)]),
+    key=("match_id", "map_name", "generated_at"),
+    partition_by=("generated_at", "day"),
+)
+
+# learned and markets are JSON lists. updated_at moves every run, so each run appends a
+# row per tracked match; the newest row is the match's state.
+PREMATCH_MATCHES = TableSpec(
+    "cs2_prematch_matches",
+    pa.schema([
+        pa.field("match_id", pa.int64(), nullable=False),
+        pa.field("team_a_id", pa.int64()),
+        pa.field("team_b_id", pa.int64()),
+        pa.field("kickoff", pa.timestamp("us", tz="UTC")),
+        pa.field("series_slug", pa.string()),
+        pa.field("team_a_outcome", pa.int64()),
+        pa.field("learned", pa.string()),
+        pa.field("markets", pa.string()),
+        pa.field("launch_at", pa.timestamp("us", tz="UTC")),
+        pa.field("launch_sent_at", pa.timestamp("us", tz="UTC")),
+        pa.field("shutdown_sent_at", pa.timestamp("us", tz="UTC")),
+        pa.field("alias_settled", pa.bool_()),
+        pa.field("first_seen", pa.timestamp("us", tz="UTC")),
+        pa.field("updated_at", pa.timestamp("us", tz="UTC")),
+    ]),
+    key=("match_id",),
+)
+
+TEAM_ALIASES = TableSpec(
+    "cs2_team_aliases",
+    pa.schema([
+        pa.field("source", pa.string(), nullable=False),
+        pa.field("source_name_norm", pa.string(), nullable=False),
+        pa.field("hltv_team_id", pa.int64(), nullable=False),
+        pa.field("status", pa.string()),
+        pa.field("evidence_count", pa.int64()),
+        pa.field("first_seen", pa.timestamp("us", tz="UTC")),
+        pa.field("last_seen", pa.timestamp("us", tz="UTC")),
+    ]),
+    key=("source", "source_name_norm", "hltv_team_id"),
+)
+
 ALL = (MATCH_HISTORY, PLAYER_MAP_STATS, MATCH_VETO, H2H_HISTORY, TEAM_RECENT_FORM, ROUND_FEATURES, TEAM_RANKINGS,
-       MATCH_PRIORS, PREMATCH_PREDICTIONS)
+       MATCH_PRIORS, PREMATCH_PREDICTIONS, PREMATCH_PREDICTION_INPUTS, PREMATCH_MATCHES, TEAM_ALIASES)

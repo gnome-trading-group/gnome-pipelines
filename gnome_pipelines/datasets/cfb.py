@@ -8,6 +8,7 @@ name, origin school and transfer date identify the row.
 import pyarrow as pa
 from gnomepy.data import TableSpec
 
+# Head coach seasons with hire date and that season's results (usable only after it ends)
 COACHES = TableSpec(
     "cfb_coaches",
     pa.schema([
@@ -32,6 +33,7 @@ COACHES = TableSpec(
     key=("coach_id", "season", "team_id"),
 )
 
+# CFBD FBS drives with normalized outcome (from score deltas), start field position/clock, team ids
 DRIVES = TableSpec(
     "cfb_drives",
     pa.schema([
@@ -64,6 +66,7 @@ DRIVES = TableSpec(
     partition_by=("season", "identity"),
 )
 
+# CFBD FBS games (regular+postseason): kickoff, teams, conferences, final score, CFBD pregame Elo
 GAMES = TableSpec(
     "cfb_games",
     pa.schema([
@@ -94,6 +97,7 @@ GAMES = TableSpec(
     key=("game_id",),
 )
 
+# CFBD sportsbook lines per game+provider: closing spread/total/moneyline (+open where given), no-vig prob
 LINES = TableSpec(
     "cfb_lines",
     pa.schema([
@@ -112,6 +116,7 @@ LINES = TableSpec(
     key=("game_id", "provider"),
 )
 
+# Dropback plays (pass/sack/INT) with passer parsed from play text — QB starter inference input
 PASSERS = TableSpec(
     "cfb_passers",
     pa.schema([
@@ -133,6 +138,7 @@ PASSERS = TableSpec(
     partition_by=("season", "identity"),
 )
 
+# CFBD FBS play-by-play: down/distance/yardline/clock/score/timeouts, play type+text, wallclock
 PLAYS = TableSpec(
     "cfb_plays",
     pa.schema([
@@ -167,6 +173,7 @@ PLAYS = TableSpec(
     partition_by=("season", "identity"),
 )
 
+# Transfer portal entries: origin, destination, transfer date, stars/rating
 PORTAL = TableSpec(
     "cfb_portal",
     pa.schema([
@@ -188,6 +195,8 @@ PORTAL = TableSpec(
     key=("season", "first_name", "last_name", "origin", "transfer_date"),
 )
 
+# One row per game: weekly cutoff, both teams' preseason + season-to-date features, venue context, label_*
+# outcomes
 PREGAME_FEATURES = TableSpec(
     "cfb_pregame_features",
     pa.schema([
@@ -308,6 +317,7 @@ PREGAME_FEATURES = TableSpec(
     key=("game_id",),
 )
 
+# 247 team recruiting class rank/points per class year
 RECRUITING_TEAMS = TableSpec(
     "cfb_recruiting_teams",
     pa.schema([
@@ -321,6 +331,7 @@ RECRUITING_TEAMS = TableSpec(
     key=("class_year", "team"),
 )
 
+# High-school recruits: stars, rating, position, committed team
 RECRUITS = TableSpec(
     "cfb_recruits",
     pa.schema([
@@ -340,6 +351,7 @@ RECRUITS = TableSpec(
     key=("recruit_id",),
 )
 
+# Returning production (share of prior-season PPA/usage) per team-season
 RETURNING = TableSpec(
     "cfb_returning",
     pa.schema([
@@ -364,6 +376,7 @@ RETURNING = TableSpec(
     key=("season", "team"),
 )
 
+# Season rosters: position, class year, recruit ids (latest CFBD snapshot)
 ROSTERS = TableSpec(
     "cfb_rosters",
     pa.schema([
@@ -384,6 +397,7 @@ ROSTERS = TableSpec(
     key=("season", "player_id", "team"),
 )
 
+# 247 team talent composite per season
 TALENT = TableSpec(
     "cfb_talent",
     pa.schema([
@@ -396,6 +410,8 @@ TALENT = TableSpec(
     key=("season", "team"),
 )
 
+# Per (game, offense): PPA/play (garbage time excluded), pass/rush PPA, success rate, explosiveness, plays, venue,
+# opponent; the efficiency model's observations
 TEAM_GAME_EFFICIENCY = TableSpec(
     "cfb_team_game_efficiency",
     pa.schema([
@@ -425,6 +441,7 @@ TEAM_GAME_EFFICIENCY = TableSpec(
     key=("game_id", "team_id"),
 )
 
+# CFBD team-game PPA per play (garbage time excluded, 2-dp rounded) — validation reference
 TEAM_GAME_PPA_CFBD = TableSpec(
     "cfb_team_game_ppa_cfbd",
     pa.schema([
@@ -446,6 +463,8 @@ TEAM_GAME_PPA_CFBD = TableSpec(
     key=("game_id", "team"),
 )
 
+# Point-in-time preseason features per (season, team): prior-season ridge ratings, talent, recruiting, position
+# groups, returning production, portal, QB, coach
 TEAM_PRESEASON_FEATURES = TableSpec(
     "cfb_team_preseason_features",
     pa.schema([
@@ -491,6 +510,8 @@ TEAM_PRESEASON_FEATURES = TableSpec(
     key=("season", "team_id"),
 )
 
+# Point-in-time season-to-date features per (weekly cutoff, team): PPA, success, allowed, ridge-adjusted O/D,
+# current QB
 TEAM_WEEK_FEATURES = TableSpec(
     "cfb_team_week_features",
     pa.schema([
@@ -518,6 +539,36 @@ TEAM_WEEK_FEATURES = TableSpec(
     key=("cutoff", "team_id"),
 )
 
+# Team-week posterior summaries of the dynamic efficiency model, one row per (weekly cutoff, team) per
+# likelihood; the joint draws are posterior_draws artifacts.
+TEAM_WEEK_POSTERIOR = TableSpec(
+    "cfb_team_week_posterior",
+    pa.schema([
+        pa.field("season", pa.int64()),
+        pa.field("cutoff", pa.timestamp("us", tz="UTC"), nullable=False),
+        pa.field("team_id", pa.int64(), nullable=False),
+        pa.field("offense_mean", pa.float64()),
+        pa.field("offense_sd", pa.float64()),
+        pa.field("defense_mean", pa.float64()),
+        pa.field("defense_sd", pa.float64()),
+        pa.field("od_corr", pa.float64()),
+        pa.field("games_observed", pa.float64()),
+        pa.field("plays_observed", pa.float64()),
+        pa.field("season_type", pa.string()),
+        pa.field("week", pa.int64()),
+        pa.field("period", pa.int64()),
+        pa.field("alpha_mean", pa.float64()),
+        pa.field("max_rhat", pa.float64()),
+        pa.field("divergences", pa.int64()),
+        pa.field("model_version", pa.string()),
+        pa.field("hyperparameters", pa.string()),
+        pa.field("likelihood", pa.string(), nullable=False),
+        pa.field("training_data_version", pa.string()),
+        pa.field("created_at", pa.string()),
+    ]),
+    key=("cutoff", "team_id", "likelihood"),
+)
+
 ALL = (
     COACHES,
     DRIVES,
@@ -536,4 +587,5 @@ ALL = (
     TEAM_GAME_PPA_CFBD,
     TEAM_PRESEASON_FEATURES,
     TEAM_WEEK_FEATURES,
+    TEAM_WEEK_POSTERIOR,
 )

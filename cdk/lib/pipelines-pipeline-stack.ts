@@ -10,7 +10,7 @@ class AppStage extends cdk.Stage {
   constructor(scope: Construct, id: string, config: PipelinesConfig) {
     super(scope, id, { env: config.account.environment });
 
-    new DataStack(this, "PipelinesDataStack");
+    new DataStack(this, "PipelinesDataStack", { stage: config.account.stage });
   }
 }
 

@@ -1,0 +1,67 @@
+name: Build & Push Pipelines Docker Image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'gnome_pipelines/**'
+      - 'Dockerfile'
+      - 'pyproject.toml'
+      - 'poetry.lock'
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build image
+        run: |
+          SHA=$(git rev-parse --short HEAD)
+          docker build \
+            --build-arg GIT_SHA=$SHA \
+            -t gnomepy-pipelines:latest \
+            -t gnomepy-pipelines:$SHA \
+            .
+          echo "SHA=$SHA" >> $GITHUB_ENV
+
+      - name: Configure AWS credentials (dev)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ECR_ROLE_ARN_DEV }}
+          aws-region: us-east-1
+
+      - name: Login to ECR (dev)
+        id: login-ecr-dev
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Push to dev ECR
+        run: |
+          REGISTRY=${{ steps.login-ecr-dev.outputs.registry }}
+          docker tag gnomepy-pipelines:latest $REGISTRY/gnomepy-pipelines:latest
+          docker tag gnomepy-pipelines:$SHA $REGISTRY/gnomepy-pipelines:$SHA
+          docker push $REGISTRY/gnomepy-pipelines:latest
+          docker push $REGISTRY/gnomepy-pipelines:$SHA
+
+      - name: Configure AWS credentials (prod)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ECR_ROLE_ARN_PROD }}
+          aws-region: us-east-1
+
+      - name: Login to ECR (prod)
+        id: login-ecr-prod
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Push to prod ECR
+        run: |
+          REGISTRY=${{ steps.login-ecr-prod.outputs.registry }}
+          docker tag gnomepy-pipelines:latest $REGISTRY/gnomepy-pipelines:latest
+          docker tag gnomepy-pipelines:$SHA $REGISTRY/gnomepy-pipelines:$SHA
+          docker push $REGISTRY/gnomepy-pipelines:latest
+          docker push $REGISTRY/gnomepy-pipelines:$SHA

@@ -7,7 +7,14 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = ">=3.13,<3.14"
-gnomepy = {version = "^2.25.0", extras = ["live-data"]}
+gnomepy = {version = "^2.25.2", extras = ["live-data"]}
+gnomepy-research = {path = "../gnomepy-research", develop = true}
+beautifulsoup4 = "*"
+lxml = "^6.0"
+zenrows = "^1.4.1"
+nodriver = "*"
+demoparser2 = "*"
+opencv-python = "*"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.4.1"
