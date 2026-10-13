@@ -1467,13 +1467,13 @@ tardis = ["tardis-dev (>=4.0.0,<5.0.0)"]
 
 [[package]]
 name = "gnomepy-research"
-version = "0.1.0"
+version = "1.0.0"
 description = "Signal research, replay, metrics, and strategy modules for gnomepy"
 optional = false
 python-versions = ">=3.13,<3.14"
 groups = ["main"]
 files = []
-develop = true
+develop = false
 
 [package.dependencies]
 gnomepy = {version = "^2.25.2", extras = ["backtest", "live-data"]}
@@ -1485,8 +1485,10 @@ scikit-learn = "^1.9.1"
 xgboost = "^3.4.1"
 
 [package.source]
-type = "directory"
-url = "../gnomepy-research"
+type = "git"
+url = "https://github.com/gnome-trading-group/gnomepy-research.git"
+reference = "v1.0.0"
+resolved_reference = "0a00faea3a429612127f7001d880ca60a49a6eaf"
 
 [[package]]
 name = "google-crc32c"
@@ -5004,4 +5006,4 @@ cffi = ["cffi (>=1.11)"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.13,<3.14"
-content-hash = "3e886776a96c440b446e68148ca456845f558410c461b09d390c2c63a7bdf35f"
+content-hash = "3161c07ae5ead07017e6c0f3d6834e6d17ea53e2791f0d826d5f3dd668b2043d"

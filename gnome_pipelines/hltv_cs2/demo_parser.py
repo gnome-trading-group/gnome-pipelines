@@ -19,7 +19,7 @@ import re
 import pandas as pd
 from demoparser2 import DemoParser
 
-from gnomepy_research.hltv_cs2.config import MAP_POOL
+from gnomepy_research.models.cs2.hltv.config import MAP_POOL
 
 logger = logging.getLogger(__name__)
 

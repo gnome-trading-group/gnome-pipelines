@@ -13,8 +13,8 @@ import joblib
 
 from gnome_pipelines import Pipeline, PipelineResult, register_pipeline
 from gnome_pipelines.stores import artifact_store, dataset_store
-from gnomepy_research.sessions.cs2_win_probability.pre_map_features import PREVETO_FEATURE_NAMES
-from gnomepy_research.sessions.cs2_win_probability.pre_map_model import fit_production, load_training_frame
+from gnomepy_research.models.cs2.win_probability.pre_map_features import PREVETO_FEATURE_NAMES
+from gnomepy_research.models.cs2.win_probability.pre_map_model import fit_production, load_training_frame
 
 logger = logging.getLogger(__name__)
 

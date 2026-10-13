@@ -14,8 +14,8 @@ from gnomepy.data import TableSpec
 
 from gnome_pipelines.datasets import cs2
 from gnome_pipelines.stores import dataset_store
-from gnomepy_research.hltv_cs2.build_priors import build_priors
-from gnomepy_research.hltv_cs2.sides import attach_team_keyed_scores
+from gnomepy_research.models.cs2.hltv.build_priors import build_priors
+from gnomepy_research.models.cs2.hltv.sides import attach_team_keyed_scores
 
 logger = logging.getLogger(__name__)
 

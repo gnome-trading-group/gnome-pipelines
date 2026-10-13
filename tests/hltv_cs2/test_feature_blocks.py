@@ -6,16 +6,16 @@ import pandas as pd
 import pytest
 from bs4 import BeautifulSoup
 
-from gnomepy_research.hltv_cs2 import context_features as cf
-from gnomepy_research.hltv_cs2.pit import assert_pit_consistent
-from gnomepy_research.hltv_cs2.player_form import (
+from gnomepy_research.models.cs2.hltv import context_features as cf
+from gnomepy_research.models.cs2.hltv.pit import assert_pit_consistent
+from gnomepy_research.models.cs2.hltv.player_form import (
     PLAYERS_AUX,
     PlayerFormAccumulator,
     compute_player_form_features,
     PLAYER_FORM_FEATURES,
 )
 from gnome_pipelines.hltv_cs2.scraper import parse_match_detail_html
-from gnomepy_research.sessions.cs2_win_probability.symmetry import build_swap_plan, swap_features
+from gnomepy_research.models.cs2.win_probability.symmetry import build_swap_plan, swap_features
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

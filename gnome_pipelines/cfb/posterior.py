@@ -5,11 +5,13 @@
 from __future__ import annotations
 
 import argparse
+import tempfile
+from pathlib import Path
 
 from gnome_pipelines.datasets import cfb
 from gnome_pipelines.stores import artifact_store, dataset_store
-from gnomepy_research.sessions.cfb_win_probability.models.inference import Inputs
-from gnomepy_research.sessions.cfb_win_probability.models.posterior_snapshots import (
+from gnomepy_research.models.cfb.efficiency.inference import Inputs
+from gnomepy_research.models.cfb.efficiency.posterior_snapshots import (
     MODEL_VERSION,
     N_DRAWS_KEPT,
     hyper_name,
@@ -24,16 +26,17 @@ def main() -> None:
     ap.add_argument("--likelihood", default="studentt")
     args = ap.parse_args()
     ds = dataset_store()
-    table, paths = snapshot_seasons(Inputs.load(ds), args.first, args.last, args.likelihood)
-    print(ds.publish(cfb.TEAM_WEEK_POSTERIOR, table))
     store = artifact_store()
-    for season, path in paths:
-        print(store.publish(
-            path, "posterior_draws", f"cfb_team_week_draws_{season}", inputs=ds.loaded,
-            description=f"{MODEL_VERSION} joint draws (alpha, O, D) per weekly cutoff, {season}",
-            params={"likelihood": args.likelihood, "hyperparameters": hyper_name(args.likelihood, season),
-                    "draws": N_DRAWS_KEPT},
-        ))
+    with tempfile.TemporaryDirectory() as tmp:
+        table, paths = snapshot_seasons(Inputs.load(ds), args.first, args.last, args.likelihood, out_dir=Path(tmp))
+        print(ds.publish(cfb.TEAM_WEEK_POSTERIOR, table))
+        for season, path in paths:
+            print(store.publish(
+                path, "posterior_draws", f"cfb_team_week_draws_{season}", inputs=ds.loaded,
+                description=f"{MODEL_VERSION} joint draws (alpha, O, D) per weekly cutoff, {season}",
+                params={"likelihood": args.likelihood, "hyperparameters": hyper_name(args.likelihood, season),
+                        "draws": N_DRAWS_KEPT},
+            ))
 
 
 if __name__ == "__main__":

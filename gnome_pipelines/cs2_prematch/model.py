@@ -12,8 +12,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from gnomepy_research.sessions.cs2_win_probability.pre_map_model import CS2PreMapModel, _matrix
-from gnomepy_research.sessions.cs2_win_probability.series_dp import series_nodes, series_win_prob
+from gnomepy_research.models.cs2.win_probability.pre_map_model import CS2PreMapModel, _matrix
+from gnomepy_research.models.cs2.win_probability.series_dp import series_nodes, series_win_prob
 
 MAPS_TO_WIN = 2
 PROB_CLIP = (0.01, 0.99)

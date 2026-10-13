@@ -8,8 +8,8 @@ import argparse
 
 from gnome_pipelines.datasets import cfb
 from gnome_pipelines.stores import dataset_store
-from gnomepy_research.sessions.cfb_win_probability.features.snapshots import build_all
-from gnomepy_research.sessions.cfb_win_probability.features.source import SourceData
+from gnomepy_research.models.cfb.features.snapshots import build_all
+from gnomepy_research.models.cfb.features.source import SourceData
 
 SPECS = {s.name: s for s in (cfb.TEAM_PRESEASON_FEATURES, cfb.TEAM_WEEK_FEATURES, cfb.PREGAME_FEATURES)}
 

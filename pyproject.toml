@@ -8,7 +8,7 @@ readme = "README.md"
 [tool.poetry.dependencies]
 python = ">=3.13,<3.14"
 gnomepy = {version = "^2.25.2", extras = ["live-data"]}
-gnomepy-research = {path = "../gnomepy-research", develop = true}
+gnomepy-research = {git = "https://github.com/gnome-trading-group/gnomepy-research.git", tag = "v1.0.0"}
 beautifulsoup4 = "*"
 lxml = "^6.0"
 zenrows = "^1.4.1"

@@ -28,7 +28,7 @@ import pandas as pd
 from bs4 import BeautifulSoup
 from zenrows import ZenRowsClient
 
-from gnomepy_research.hltv_cs2.config import MAP_POOL
+from gnomepy_research.models.cs2.hltv.config import MAP_POOL
 from gnome_pipelines.hltv_cs2.html_cache import HtmlCache, is_cacheable, is_complete
 from gnome_pipelines.datasets import cs2
 from gnome_pipelines.hltv_cs2.publish import publish, publish_match_data

@@ -8,7 +8,7 @@ prediction time that it never saw in training.
 import numpy as np
 import pandas as pd
 
-from gnomepy_research.hltv_cs2.build_priors import build_priors, build_priors_for
+from gnomepy_research.models.cs2.hltv.build_priors import build_priors, build_priors_for
 
 from tests.hltv_cs2.test_feature_blocks import _synthetic_history, _synthetic_players
 

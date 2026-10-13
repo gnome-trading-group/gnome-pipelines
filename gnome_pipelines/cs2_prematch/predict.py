@@ -40,10 +40,10 @@ from gnome_pipelines.datasets import cs2
 from gnome_pipelines.hltv_cs2.publish import publish
 from gnome_pipelines.hltv_cs2.scraper import _make_session, scrape_upcoming_matches
 from gnome_pipelines.stores import artifact_store, dataset_store
-from gnomepy_research.hltv_cs2.build_priors import build_priors_for
-from gnomepy_research.sessions.cs2_prematch import identity, polymarket
-from gnomepy_research.sessions.cs2_prematch.predictions import validate
-from gnomepy_research.sessions.cs2_win_probability.pre_map_model import CS2PreMapModel
+from gnomepy_research.models.cs2.hltv.build_priors import build_priors_for
+from gnomepy_research.models.cs2.prematch import identity, polymarket
+from gnomepy_research.models.cs2.prematch.predictions import validate
+from gnomepy_research.models.cs2.win_probability.pre_map_model import CS2PreMapModel
 
 logger = logging.getLogger(__name__)
 

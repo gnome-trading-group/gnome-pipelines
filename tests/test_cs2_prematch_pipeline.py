@@ -14,11 +14,11 @@ import pytest
 
 from gnome_pipelines.cs2_prematch import predict
 from gnome_pipelines.cs2_prematch.model import node_frame, price
-from gnomepy_research.sessions.cs2_prematch import identity
-from gnomepy_research.sessions.cs2_prematch.polymarket import index_markets
-from gnomepy_research.sessions.cs2_win_probability.pre_map_features import PREVETO_FEATURE_NAMES
-from gnomepy_research.sessions.cs2_win_probability.pre_map_model import CS2PreMapModel, _matrix, fit_production
-from gnomepy_research.sessions.cs2_win_probability.symmetry import build_swap_plan, swap_features
+from gnomepy_research.models.cs2.prematch import identity
+from gnomepy_research.models.cs2.prematch.polymarket import index_markets
+from gnomepy_research.models.cs2.win_probability.pre_map_features import PREVETO_FEATURE_NAMES
+from gnomepy_research.models.cs2.win_probability.pre_map_model import CS2PreMapModel, _matrix, fit_production
+from gnomepy_research.models.cs2.win_probability.symmetry import build_swap_plan, swap_features
 
 NOW = pd.Timestamp("2026-10-05 01:00", tz="UTC")
 KICK = pd.Timestamp("2026-10-05 16:30", tz="UTC")

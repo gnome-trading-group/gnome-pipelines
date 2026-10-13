@@ -12,7 +12,7 @@ from pathlib import Path
 
 from gnome_pipelines.datasets import cs2
 from gnome_pipelines.stores import artifact_store, dataset_store
-from gnomepy_research.sessions.cs2_win_probability.model import train
+from gnomepy_research.models.cs2.win_probability.model import train
 
 logger = logging.getLogger(__name__)
 
