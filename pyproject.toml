@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "gnome-pipelines"
+version = "0.1.0"
+description = "Data pipelines, ingestion and their infrastructure for gnome research datasets"
+authors = ["mprey <masonprey7@gmail.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = ">=3.13,<3.14"
+gnomepy = {path = "../gnomepy", develop = true, extras = ["live-data"]}
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.4.1"
+sqlalchemy = "^2.0.0"
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
