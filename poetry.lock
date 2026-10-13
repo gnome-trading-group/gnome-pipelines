@@ -442,18 +442,20 @@ name = "gnomepy"
 version = "2.25.0"
 description = ""
 optional = false
-python-versions = ">=3.13,<3.14"
+python-versions = "<3.14,>=3.13"
 groups = ["main"]
-files = []
-develop = true
+files = [
+    {file = "gnomepy-2.25.0-py3-none-any.whl", hash = "sha256:bf85716fb8f75eb515eaae715fb57d1b90efce79caebceae8cae4c1f84def41d"},
+    {file = "gnomepy-2.25.0.tar.gz", hash = "sha256:499cf1ad68971251859ec4570aea9306fc7187d77dc6a0660a544944bc2ac68c"},
+]
 
 [package.dependencies]
 boto3 = ">=1.36.18,<2.0.0"
 click = ">=8.1,<9.0"
 jpype1 = ">=1.5.0,<2.0.0"
-pandas = {version = ">=2.2.3,<3.0.0", optional = true}
-pyarrow = {version = ">=23.0.1,<24.0.0", optional = true}
-pyiceberg = {version = ">=0.12.0,<0.13.0", extras = ["pyiceberg-core"], optional = true}
+pandas = {version = ">=2.2.3,<3.0.0", optional = true, markers = "extra == \"live-data\""}
+pyarrow = {version = ">=23.0.1,<24.0.0", optional = true, markers = "extra == \"live-data\""}
+pyiceberg = {version = ">=0.12.0,<0.13.0", extras = ["pyiceberg-core"], optional = true, markers = "extra == \"live-data\""}
 pytz = ">=2025.1,<2026.0"
 pyyaml = ">=6.0,<7.0"
 requests = ">=2.32.3,<3.0.0"
@@ -464,10 +466,6 @@ backtest = ["anthropic (>=0.40.0,<1.0.0)", "boto3-stubs (>=1.42.73,<2.0.0)", "da
 live-data = ["pandas (>=2.2.3,<3.0.0)", "pyarrow (>=23.0.1,<24.0.0)", "pyiceberg[pyiceberg-core] (>=0.12.0,<0.13.0)"]
 strategy = ["numpy (>=2.2.4,<3.0.0)", "scipy (>=1.15.0,<2.0.0)"]
 tardis = ["tardis-dev (>=4.0.0,<5.0.0)"]
-
-[package.source]
-type = "directory"
-url = "../gnomepy"
 
 [[package]]
 name = "idna"
@@ -1993,4 +1991,4 @@ cffi = ["cffi (>=1.11)"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.13,<3.14"
-content-hash = "f5a5feb82e35c633857a5d0746de0ad556a48c4ee934c01e70527d0fe9677842"
+content-hash = "3ed999119b7cf845058b1da4e8afc7a51daf45ed8a13d341904c58c4cdcd18e2"

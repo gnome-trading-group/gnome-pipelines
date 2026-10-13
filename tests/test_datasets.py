@@ -1,11 +1,13 @@
-"""Every CS2 table spec accepts a row and reads it back, against a local catalog."""
+"""Every table spec accepts a row and reads it back, against a local catalog."""
 from datetime import datetime, timezone
 
 import pyarrow as pa
 import pytest
 from gnomepy.data import CatalogConfig, DatasetStore
 
-from gnome_pipelines.datasets import cs2
+from gnome_pipelines.datasets import cfb, cs2
+
+SPECS = (*cs2.ALL, *cfb.ALL)
 
 
 def sample_value(field: pa.Field):
@@ -23,7 +25,7 @@ def sample_value(field: pa.Field):
     return "x"
 
 
-@pytest.mark.parametrize("spec", cs2.ALL, ids=lambda s: s.name)
+@pytest.mark.parametrize("spec", SPECS, ids=lambda s: s.name)
 def test_spec_accepts_a_row_and_reads_it_back(spec, tmp_path):
     row = pa.Table.from_pylist([{f.name: sample_value(f) for f in spec.schema}], schema=spec.schema).to_pandas()
     store = DatasetStore(CatalogConfig(local_warehouse=tmp_path))
@@ -37,5 +39,5 @@ def test_spec_accepts_a_row_and_reads_it_back(spec, tmp_path):
 
 
 def test_spec_names_are_unique():
-    names = [s.name for s in cs2.ALL]
+    names = [s.name for s in SPECS]
     assert len(names) == len(set(names))

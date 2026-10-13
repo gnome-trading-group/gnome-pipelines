@@ -7,7 +7,7 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = ">=3.13,<3.14"
-gnomepy = {path = "../gnomepy", develop = true, extras = ["live-data"]}
+gnomepy = {version = "^2.25.0", extras = ["live-data"]}
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.4.1"
