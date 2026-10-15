@@ -6,7 +6,7 @@ Scrapes three page types:
   - /matches/{id}/...                   — per-match detail (lineups, veto, stats)
   - /ranking/teams/{year}/{month}/{day} — weekly team rankings
 
-Requires ZENROWS_API_KEY env var.
+Needs the ZenRows key: ZENROWS_API_KEY, or gnome/pipelines/zenrows in Secrets Manager.
 Uses js_render + premium_proxy (25 credits/page) to bypass Cloudflare on HLTV.
 
 Usage (via HltvCs2Pipeline or CLI):
@@ -19,7 +19,6 @@ import argparse
 import calendar
 import datetime
 import logging
-import os
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -29,6 +28,7 @@ from bs4 import BeautifulSoup
 from zenrows import ZenRowsClient
 
 from gnomepy_research.models.cs2.hltv.config import MAP_POOL
+from gnome_pipelines.credentials import secret
 from gnome_pipelines.hltv_cs2.html_cache import HtmlCache, is_cacheable, is_complete
 from gnome_pipelines.datasets import cs2
 from gnome_pipelines.hltv_cs2.publish import publish, publish_match_data
@@ -45,7 +45,7 @@ class _Session:
     """ZenRows session — residential proxy + JS render bypasses Cloudflare on HLTV."""
 
     def __init__(self) -> None:
-        self._client = ZenRowsClient(os.environ["ZENROWS_API_KEY"])
+        self._client = ZenRowsClient(secret("zenrows", "ZENROWS_API_KEY"))
 
     def get_html(self, url: str) -> str | None:
         try:
