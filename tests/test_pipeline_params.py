@@ -4,14 +4,17 @@ from datetime import date
 import pytest
 from pydantic import ValidationError
 
-from gnome_pipelines import PIPELINE_REGISTRY
+from gnome_pipelines import families
 from gnome_pipelines.cs2_upcoming.pipeline import CS2UpcomingParams
 from gnome_pipelines.hltv_cs2.pipeline import HltvCs2Params
 from gnome_pipelines.runner import execute
 
 
-def test_every_registered_pipeline_declares_its_params():
-    assert {name: cls.params_type.__name__ for name, cls in PIPELINE_REGISTRY.items()} == {
+PIPELINES = families.available()
+
+
+def test_every_pipeline_declares_its_params():
+    assert {name: cls.params_type.__name__ for name, cls in PIPELINES.items()} == {
         "hltv_cs2": "HltvCs2Params",
         "cs2_prematch_train": "CS2PrematchTrainParams",
         "cs2_upcoming": "CS2UpcomingParams",
@@ -66,9 +69,9 @@ FARGATE = {256: range(512, 2049, 512), 512: range(1024, 4097, 1024), 1024: range
            2048: range(4096, 16385, 1024), 4096: range(8192, 30721, 1024)}
 
 
-@pytest.mark.parametrize("name", sorted(PIPELINE_REGISTRY))
+@pytest.mark.parametrize("name", sorted(PIPELINES))
 def test_declarations_are_valid(name):
-    cls = PIPELINE_REGISTRY[name]
+    cls = PIPELINES[name]
 
     assert cls.description
     assert cls.resources.memory in FARGATE[cls.resources.cpu]

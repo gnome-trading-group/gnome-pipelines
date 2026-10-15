@@ -15,19 +15,20 @@ through `gnomepy.data`; gnomepy-research holds the feature and model code these 
 | `gnome_pipelines/cs2_round_model/` | Round win probability model training |
 | `gnome_pipelines/cfb/` | CFBD ingestion, quality checks, feature snapshots, team-week posteriors |
 | `gnome_pipelines/__init__.py` | `Pipeline[Params]`: what a pipeline declares (parameters, description, `Resources`, `Schedule`s) |
-| `gnome_pipelines/manifest.py` | Those declarations as JSON, published to SSM by CI for the API and the scheduler |
-| `gnome_pipelines/cli.py` | `gnome-pipelines run <pipeline> --stage local\|dev\|prod`: a registered pipeline on your machine |
+| `gnome_pipelines/families/` | Pipeline families: each module lists the pipelines that share one image (`PIPELINES`) |
+| `gnome_pipelines/manifest.py` | Those declarations as JSON, published to SSM by CI per family for the API and the scheduler |
+| `gnome_pipelines/cli.py` | `gnome-pipelines run <pipeline> --stage local\|dev\|prod`: any pipeline on your machine |
 | `gnome_pipelines/environment.py` | `environment()`: the run's stage (`local`/`dev`/`prod`) and whether it's in a Fargate task |
 | `gnome_pipelines/runner.py` | Fargate entry point the trigger Lambda starts (`PIPELINE_NAME`, `RUN_ID`, `PIPELINE_PARAMS`); records the run's status |
-| `Dockerfile`, `.github/workflows/build-image.yml` | The `gnome-pipelines` image: every push to main goes to dev ECR, then to prod once approved on the `prod` GitHub environment |
+| `Dockerfile`, `.github/workflows/build-image.yml` | One `gnome-pipelines:<family>-<sha>` image per family: every push to main goes to dev ECR, then to prod once approved on the `prod` GitHub environment |
 | `cdk/lib/stacks/data-stack.ts` | The S3 Tables bucket, its namespaces, the SSM parameters `gnomepy.data` finds it by, the pipeline secrets, and the data API |
-| `cdk/lib/stacks/run-stack.ts` | Running pipelines: ECR repo, Fargate cluster and task, the `gnome-pipelines` runs table, schedule group, Lambdas, alarms |
+| `cdk/lib/stacks/run-stack.ts` | Running pipelines: ECR repo, Fargate cluster and one task definition per family, the `gnome-pipelines` runs table, schedule group, Lambdas, alarms |
 | `cdk/lambda/` | The pipelines API (`api.py`), run trigger, schedule sync and the task-stopped status handler |
 | `cdk/data-api/` | The datasets and artifacts API: a container Lambda reading the Iceberg tables |
 
 ```
-poetry install
-poetry run pytest     # includes tests/lambdas (cdk/lambda) and tests/data_api (cdk/data-api)
+poetry install --all-extras   # every family's dependencies
+poetry run pytest             # includes tests/lambdas (cdk/lambda) and tests/data_api (cdk/data-api)
 ```
 
 ## How pipelines run
@@ -35,7 +36,6 @@ poetry run pytest     # includes tests/lambdas (cdk/lambda) and tests/data_api (
 A pipeline is declared entirely in code, the way an orchestrator like Dagster would have it:
 
 ```python
-@register_pipeline
 class HltvCs2Pipeline(Pipeline[HltvCs2Params]):
     name = "hltv_cs2"
     description = "HLTV matches, ... then the match priors rebuilt"
@@ -43,14 +43,24 @@ class HltvCs2Pipeline(Pipeline[HltvCs2Params]):
     schedules = (Schedule("weekly", "cron(0 6 ? * MON *)", {"days_back": 8, "min_stars": 0}),)
 ```
 
-- **Publishing.** When CI pushes the image to an account, it publishes the declarations from that image as
+- **Families.** Every pipeline is listed in exactly one family, `gnome_pipelines/families/<family>.py`, and
+  the family has the extra of the same name in `pyproject.toml`: what its pipelines need beyond the base,
+  including the gnomepy-research extras (`xgboost`, `pymc`, ...) its research imports declare. CI builds one
+  image per family with only that extra, and the build fails if the family's pipelines don't import there
+  (`python -m gnome_pipelines.manifest check`); `tests/test_families.py` catches the same locally. A new
+  pipeline goes into the family whose dependencies it shares; a new family is a module here, its extra,
+  and its name in `FAMILIES` in `run-stack.ts`. Each family becomes a Dagster code location when the
+  pipelines move to Dagster. The CFB scripts in `gnome_pipelines/cfb/` aren't pipelines yet, so there is a
+  `cfb` extra for running them locally but no `cfb` family or image.
+- **Publishing.** When CI pushes a family's image to an account, it publishes that family's declarations as
   one SSM parameter per pipeline under `/gnome/pipelines/types/` and invokes `gnome-pipelines-sync`, which
   makes the EventBridge schedules (group `gnome-pipelines`, named `<pipeline>.<schedule>`) match: new ones
   start **off**, changed ones keep their on/off state, removed ones are deleted. Re-run the workflow by hand
   to republish.
 - **Running.** A schedule, or "Run" on the Pipelines page, invokes `gnome-pipelines-trigger`. It checks the
   parameters against the published schema, records the run in the `gnome-pipelines` table and starts one
-  Fargate task with the pipeline's declared size; the runner then validates with the Pydantic model itself.
+  Fargate task in the pipeline's family's task definition, with its declared size; the runner then validates
+  with the Pydantic model itself.
   A failed run is put on the `gnome-alerts` bus as `PIPELINE_FAILED`; logs go to `/gnome-pipelines/runs`.
 - **The UI.** gnome-controller's Research pages call `/research/pipelines/*`, `/research/datasets/*` and
   `/research/artifacts/*`, which it forwards to `gnome-pipelines-api` and `gnome-pipelines-data-api`. A

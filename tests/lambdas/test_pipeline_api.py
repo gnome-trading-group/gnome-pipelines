@@ -17,10 +17,10 @@ SCHEMA = {
         "fetcher": {"type": "string", "enum": ["zenrows", "chrome", "cache"], "default": "zenrows"},
     },
 }
-HLTV = {"name": "hltv_cs2", "description": "HLTV", "params_schema": SCHEMA,
+HLTV = {"name": "hltv_cs2", "family": "cs2", "description": "HLTV", "params_schema": SCHEMA,
         "resources": {"cpu": 2048, "memory": 8192}, "code_version": "gnome-pipelines@abc",
         "schedules": [{"name": "weekly", "expression": "cron(0 6 ? * MON *)", "params": {"days_back": 8}, "description": ""}]}
-TRAIN = {"name": "cs2_prematch_train", "description": "train", "params_schema": {"type": "object", "properties": {}},
+TRAIN = {"name": "cs2_prematch_train", "family": "cs2", "description": "train", "params_schema": {"type": "object", "properties": {}},
          "resources": {"cpu": 1024, "memory": 4096}, "code_version": "gnome-pipelines@abc", "schedules": []}
 
 
@@ -57,12 +57,13 @@ def test_lists_declared_pipelines_with_schedule_state_and_last_run(aws):
     assert hltv["last_run"]["status"] == "PENDING" and "pk" not in hltv["last_run"]
 
 
-def test_a_run_takes_the_declared_task_size_and_the_given_parameters(aws):
+def test_a_run_takes_its_family_task_definition_the_declared_task_size_and_the_given_parameters(aws):
     status, body = call("POST", "/research/pipelines/hltv_cs2/runs", {"parameters": {"days_back": 3}})
 
     task = aws["ecs"].calls[0]["overrides"]
     environment = {e["name"]: e["value"] for e in task["containerOverrides"][0]["environment"]}
     assert status == 202 and body["run_id"]
+    assert aws["ecs"].calls[0]["taskDefinition"] == "arn:task-definition/gnome-pipelines-cs2"
     assert task["cpu"] == "2048" and task["memory"] == "8192"
     assert json.loads(environment["PIPELINE_PARAMS"]) == {"days_back": 3}
 
@@ -80,6 +81,14 @@ def test_bad_parameters_are_refused_before_a_task_starts(aws):
 def test_an_undeclared_pipeline_is_404(aws):
     assert call("POST", "/research/pipelines/nope/runs", {})[0] == 404
     assert call("GET", "/research/pipelines/nope")[0] == 404
+
+
+def test_a_pipeline_whose_family_has_no_task_definition_is_refused(aws, monkeypatch):
+    monkeypatch.setattr(store, "ssm", fakes.Ssm([{**TRAIN, "family": "cfb"}]))
+
+    status, body = call("POST", "/research/pipelines/cs2_prematch_train/runs", {})
+
+    assert status == 500 and "family 'cfb'" in body["error"] and aws["ecs"].calls == []
 
 
 def test_a_scheduled_trigger_that_cant_start_raises_so_it_alarms(aws):

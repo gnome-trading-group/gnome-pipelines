@@ -2,7 +2,8 @@
 
 Invoked by EventBridge Scheduler ({"pipeline_name", "trigger": "scheduled", "schedule", "parameters"}) and by
 the API Lambda ({"pipeline_name", "trigger": "manual", "parameters"}). A run's parameters are its schedule's
-or the caller's, over the pipeline's own defaults; its task size is the pipeline's declared resources.
+or the caller's, over the pipeline's own defaults; its task size is the pipeline's declared resources, and its
+task definition is its family's, whose image holds only that family's dependencies.
 """
 from __future__ import annotations
 
@@ -17,7 +18,8 @@ from params import problems
 from store import now, pipeline, run_key, table
 
 CLUSTER_ARN = os.environ["CLUSTER_ARN"]
-TASK_DEFINITION_ARN = os.environ["TASK_DEFINITION_ARN"]
+# {family: task definition ARN}, one per family image.
+TASK_DEFINITIONS = json.loads(os.environ["TASK_DEFINITIONS"])
 SUBNET_IDS = os.environ["SUBNET_IDS"].split(",")
 SECURITY_GROUP_ID = os.environ["SECURITY_GROUP_ID"]
 CONTAINER_NAME = "pipeline"
@@ -50,6 +52,9 @@ def start_run(pipeline_name: str, params: dict, trigger: str, schedule: str | No
     found = problems(declared["params_schema"], params)
     if found:
         raise Rejected(400, "Invalid parameters: " + "; ".join(found))
+    task_definition = TASK_DEFINITIONS.get(declared.get("family"))
+    if task_definition is None:
+        raise Rejected(500, f"No task definition for {pipeline_name}'s family {declared.get('family')!r}")
 
     run_id = f"{datetime.now(timezone.utc):%Y%m%dT%H%M%S}-{uuid.uuid4().hex[:8]}"
     record = {
@@ -68,7 +73,7 @@ def start_run(pipeline_name: str, params: dict, trigger: str, schedule: str | No
     cpu, memory = declared["resources"]["cpu"], declared["resources"]["memory"]
     started = ecs.run_task(
         cluster=CLUSTER_ARN,
-        taskDefinition=TASK_DEFINITION_ARN,
+        taskDefinition=task_definition,
         launchType="FARGATE",
         networkConfiguration={"awsvpcConfiguration": {
             "subnets": SUBNET_IDS, "securityGroups": [SECURITY_GROUP_ID], "assignPublicIp": "ENABLED",

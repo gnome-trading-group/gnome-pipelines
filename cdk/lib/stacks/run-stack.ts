@@ -30,6 +30,8 @@ const MANIFEST_PATH = "/gnome/pipelines/types";
 const TASK_INDEX = "by-task";
 // trigger_pipeline.py overrides the container by this name.
 const CONTAINER_NAME = "pipeline";
+// gnome_pipelines/families/: one image and task definition each. CI pushes <family>-<sha> and <family>-latest.
+const FAMILIES = ["cs2"];
 // The registry's alerting stack names its bus, so any service can put alerts on it without depending on that stack.
 const ALERT_BUS_NAME = "gnome-alerts";
 const LAMBDA_RUNTIME = lambda.Runtime.PYTHON_3_13;
@@ -49,7 +51,12 @@ export class RunStack extends cdk.Stack {
 
     const repository = new ecr.Repository(this, "ImageRepository", {
       repositoryName: NAME,
-      lifecycleRules: [{ maxImageCount: 10 }],
+      lifecycleRules: FAMILIES.map((family, i) => ({
+        rulePriority: i + 1,
+        tagStatus: ecr.TagStatus.TAGGED,
+        tagPrefixList: [`${family}-`],
+        maxImageCount: 10,
+      })),
       removalPolicy: cdk.RemovalPolicy.RETAIN,
     });
 
@@ -116,23 +123,28 @@ export class RunStack extends cdk.Stack {
       managedPolicies: [iam.ManagedPolicy.fromAwsManagedPolicyName("service-role/AmazonECSTaskExecutionRolePolicy")],
     });
 
-    const taskDefinition = new ecs.FargateTaskDefinition(this, "TaskDefinition", {
-      family: NAME,
-      cpu: 1024,
-      memoryLimitMiB: 4096,
-      taskRole,
-      executionRole,
-    });
     // A fixed name, so the API can read a run's log stream; three months covers any run worth debugging.
     const logGroup = new logs.LogGroup(this, "RunLogs", {
       logGroupName: "/gnome-pipelines/runs",
       retention: logs.RetentionDays.THREE_MONTHS,
     });
-    taskDefinition.addContainer(CONTAINER_NAME, {
-      image: ecs.ContainerImage.fromEcrRepository(repository, "latest"),
-      logging: ecs.LogDrivers.awsLogs({ streamPrefix: "pipeline", logGroup }),
-      environment: { PIPELINES_TABLE: table.tableName, GNOME_STAGE: props.stage },
-    });
+    const taskDefinitions: { [family: string]: ecs.FargateTaskDefinition } = {};
+    for (const family of FAMILIES) {
+      // The task size here is only a default: trigger_pipeline.py sizes each run from the pipeline's resources.
+      const taskDefinition = new ecs.FargateTaskDefinition(this, `TaskDefinition-${family}`, {
+        family: `${NAME}-${family}`,
+        cpu: 1024,
+        memoryLimitMiB: 4096,
+        taskRole,
+        executionRole,
+      });
+      taskDefinition.addContainer(CONTAINER_NAME, {
+        image: ecs.ContainerImage.fromEcrRepository(repository, `${family}-latest`),
+        logging: ecs.LogDrivers.awsLogs({ streamPrefix: "pipeline", logGroup }),
+        environment: { PIPELINES_TABLE: table.tableName, GNOME_STAGE: props.stage },
+      });
+      taskDefinitions[family] = taskDefinition;
+    }
 
     const manifestArn = `arn:aws:ssm:${this.region}:${this.account}:parameter${MANIFEST_PATH}`;
     const readManifest = new iam.PolicyStatement({
@@ -161,14 +173,16 @@ export class RunStack extends cdk.Stack {
     const triggerFn = fn("TriggerFunction", FUNCTION_NAMES.trigger, "trigger_pipeline",
       "Start a pipeline run (scheduled, or manual through the API)", {
         CLUSTER_ARN: cluster.clusterArn,
-        TASK_DEFINITION_ARN: taskDefinition.taskDefinitionArn,
+        TASK_DEFINITIONS: cdk.Stack.of(this).toJsonString(
+          Object.fromEntries(Object.entries(taskDefinitions).map(([family, td]) => [family, td.taskDefinitionArn])),
+        ),
         SUBNET_IDS: vpc.publicSubnets.map((s) => s.subnetId).join(","),
         SECURITY_GROUP_ID: securityGroup.securityGroupId,
       });
     table.grantReadWriteData(triggerFn);
     triggerFn.addToRolePolicy(new iam.PolicyStatement({
       actions: ["ecs:RunTask"],
-      resources: [taskDefinition.taskDefinitionArn],
+      resources: Object.values(taskDefinitions).map((td) => td.taskDefinitionArn),
     }));
     triggerFn.addToRolePolicy(new iam.PolicyStatement({
       actions: ["iam:PassRole"],

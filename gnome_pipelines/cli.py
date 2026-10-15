@@ -1,4 +1,4 @@
-"""`gnome-pipelines`: run a registered pipeline from a laptop, through the same execute() the Fargate task uses.
+"""`gnome-pipelines`: run any pipeline from a laptop, through the same execute() the Fargate task uses.
 
     gnome-pipelines list
     gnome-pipelines describe hltv_cs2
@@ -21,7 +21,7 @@ import click
 from pydantic import ValidationError
 from pydantic_core import PydanticUndefined
 
-from gnome_pipelines import PIPELINE_REGISTRY
+from gnome_pipelines import families
 from gnome_pipelines.environment import Stage
 from gnome_pipelines.runner import execute
 
@@ -36,9 +36,10 @@ def main() -> None:
 
 @main.command("list")
 def list_pipelines() -> None:
-    """The registered pipelines."""
-    for name in sorted(PIPELINE_REGISTRY):
-        click.echo(name)
+    """The pipelines, with their family."""
+    for family in families.names():
+        for name in sorted(families.pipelines(family)):
+            click.echo(f"{name} ({family})")
 
 
 @main.command()
@@ -86,9 +87,10 @@ def run(pipeline: str, stage: str, param_pairs: tuple[str, ...], params_json: st
 
 
 def _pipeline(name: str):
-    if name not in PIPELINE_REGISTRY:
-        raise click.BadParameter(f"not one of {', '.join(sorted(PIPELINE_REGISTRY))}", param_hint="PIPELINE")
-    return PIPELINE_REGISTRY[name]
+    available = families.available()
+    if name not in available:
+        raise click.BadParameter(f"not one of {', '.join(sorted(available))}", param_hint="PIPELINE")
+    return available[name]
 
 
 def _type_name(annotation: object) -> str:

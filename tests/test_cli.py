@@ -6,7 +6,7 @@ import pytest
 from click.testing import CliRunner
 from gnomepy.data import DatasetStore, TableSpec
 
-from gnome_pipelines import PIPELINE_REGISTRY, Pipeline, PipelineParams, PipelineResult
+from gnome_pipelines import Pipeline, PipelineParams, PipelineResult, families
 from gnome_pipelines.cli import main
 from gnome_pipelines.environment import Stage, environment
 from gnome_pipelines.stores import dataset_store
@@ -36,7 +36,8 @@ RUN_VARIABLES = ("GNOME_STAGE", "RUN_ID", "GNOME_CODE_VERSION", "GNOME_LOCAL_WAR
 
 @pytest.fixture
 def probe(monkeypatch):
-    monkeypatch.setitem(PIPELINE_REGISTRY, "probe", _Probe)
+    available = families.available()
+    monkeypatch.setattr(families, "available", lambda: {**available, "probe": _Probe})
     monkeypatch.delenv("ECS_CONTAINER_METADATA_URI_V4", raising=False)
     saved = {v: os.environ.pop(v) for v in RUN_VARIABLES if v in os.environ}
     yield

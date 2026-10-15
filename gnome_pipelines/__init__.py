@@ -1,9 +1,9 @@
 """Research pipeline framework.
 
 Pipelines are recurring automated jobs that collect data, build datasets,
-and optionally train models. Each pipeline is a Python class registered via
-@register_pipeline and executed by runner.execute(), in an ECS Fargate task or
-through `gnome-pipelines run`.
+and optionally train models. Each pipeline is a Python class listed in exactly
+one family (gnome_pipelines/families/) and executed by runner.execute(), in its
+family's ECS Fargate task or through `gnome-pipelines run`.
 
 Everything about a pipeline is declared in code, as an orchestrator like Dagster would have it:
 its parameters (a PipelineParams model, Pipeline[ThatModel], which execute() validates before the
@@ -17,14 +17,6 @@ from dataclasses import dataclass, field
 from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict
-
-PIPELINE_REGISTRY: dict[str, type[Pipeline]] = {}
-
-
-def register_pipeline[T: type[Pipeline]](cls: T) -> T:
-    PIPELINE_REGISTRY[cls.name] = cls
-    return cls
-
 
 class PipelineParams(BaseModel):
     # A misspelled parameter fails the run instead of silently taking the default.

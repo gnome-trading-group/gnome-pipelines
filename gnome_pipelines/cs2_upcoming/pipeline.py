@@ -37,7 +37,7 @@ from pydantic import Field, field_validator
 from pyiceberg.exceptions import NoSuchTableError
 from pyiceberg.expressions import GreaterThanOrEqual
 
-from gnome_pipelines import Pipeline, PipelineParams, PipelineResult, Resources, Schedule, register_pipeline
+from gnome_pipelines import Pipeline, PipelineParams, PipelineResult, Resources, Schedule
 from gnome_pipelines.cs2_upcoming.venues import VENUES, Ladder, Venue
 from gnome_pipelines.datasets import cs2
 from gnome_pipelines.environment import environment
@@ -324,7 +324,6 @@ def latest_state(rows: pd.DataFrame) -> dict[int, dict]:
             for r in newest.to_dict("records")}
 
 
-@register_pipeline
 class CS2UpcomingPipeline(Pipeline[CS2UpcomingParams]):
     name = "cs2_upcoming"
     description = "Track upcoming CS2 BO3s on HLTV: kickoff, status, lineups and features; their markets and books on every venue"

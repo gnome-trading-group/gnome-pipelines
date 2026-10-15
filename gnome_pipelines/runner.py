@@ -1,4 +1,4 @@
-"""Runs a registered pipeline: execute() for any caller, main() as the Fargate container's entry point.
+"""Runs a pipeline: execute() for any caller, main() as the Fargate container's entry point.
 
 main() reads PIPELINE_NAME, RUN_ID, PIPELINE_PARAMS from the environment and records the run's status in
 the PIPELINES_TABLE item that the trigger Lambda created (cdk/lambda/store.py has the layout).
@@ -17,12 +17,9 @@ from decimal import Decimal
 import boto3
 from botocore.exceptions import ClientError
 
-from gnome_pipelines import PIPELINE_REGISTRY, PipelineResult
+from gnome_pipelines import PipelineResult, families
 from gnome_pipelines.environment import environment
 from gnome_pipelines.stores import code_version
-from gnome_pipelines.cs2_prematch import CS2PrematchTrainPipeline  # noqa: F401 — registers pipeline
-from gnome_pipelines.cs2_upcoming import CS2UpcomingPipeline  # noqa: F401 — registers pipeline
-from gnome_pipelines.hltv_cs2 import HltvCs2Pipeline  # noqa: F401 — registers pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -54,9 +51,10 @@ def _update_run(pipeline_name: str, run_id: str, expect: str, **attrs: object) -
 
 
 def execute(pipeline_name: str, params: dict) -> PipelineResult:
-    pipeline_cls = PIPELINE_REGISTRY.get(pipeline_name)
+    available = families.available()
+    pipeline_cls = available.get(pipeline_name)
     if pipeline_cls is None:
-        raise ValueError(f"Unknown pipeline '{pipeline_name}'. Registered: {sorted(PIPELINE_REGISTRY)}")
+        raise ValueError(f"Unknown pipeline '{pipeline_name}'. Available here: {sorted(available)}")
     return pipeline_cls().run(pipeline_cls.params_type.model_validate(params))
 
 

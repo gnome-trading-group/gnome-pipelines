@@ -12,7 +12,7 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
-from gnome_pipelines import Pipeline, PipelineParams, PipelineResult, Resources, Schedule, register_pipeline
+from gnome_pipelines import Pipeline, PipelineParams, PipelineResult, Resources, Schedule
 from gnome_pipelines.environment import environment
 from gnome_pipelines.hltv_cs2.chrome import ChromeSource
 from gnome_pipelines.hltv_cs2.collect import collect_matches, collect_rankings
@@ -57,7 +57,6 @@ class HltvCs2Params(PipelineParams):
         return today - datetime.timedelta(days=self.days_back), today
 
 
-@register_pipeline
 class HltvCs2Pipeline(Pipeline[HltvCs2Params]):
     name = "hltv_cs2"
     description = "HLTV matches, player stats, veto, head-to-head, form and rankings; then the match priors rebuilt"

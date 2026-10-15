@@ -7,7 +7,7 @@ os.environ.update({
     "AWS_DEFAULT_REGION": "us-east-1",
     "PIPELINES_TABLE": "test-pipelines",
     "CLUSTER_ARN": "arn:cluster",
-    "TASK_DEFINITION_ARN": "arn:task-definition",
+    "TASK_DEFINITIONS": '{"cs2": "arn:task-definition/gnome-pipelines-cs2"}',
     "SUBNET_IDS": "subnet-a,subnet-b",
     "SECURITY_GROUP_ID": "sg-1",
     "TRIGGER_FUNCTION": "gnome-pipelines-trigger",

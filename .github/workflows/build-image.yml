@@ -1,4 +1,4 @@
-name: Build & Push Pipelines Docker Image
+name: Build & Push Pipelines Docker Images
 
 on:
   push:
@@ -11,29 +11,51 @@ on:
   workflow_dispatch:
 
 jobs:
-  dev:
+  # One image per pipeline family (gnome_pipelines/families/<family>.py), each with only its own extra installed.
+  families:
     runs-on: ubuntu-latest
+    outputs:
+      families: ${{ steps.list.outputs.families }}
+      sha: ${{ steps.list.outputs.sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: List the families
+        id: list
+        run: |
+          FAMILIES=$(ls gnome_pipelines/families | sed -n 's/^\([a-z0-9_]*\)\.py$/\1/p' | grep -v '^__init__$' | jq -R . | jq -cs .)
+          echo "families=$FAMILIES" >> $GITHUB_OUTPUT
+          echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+  dev:
+    needs: families
+    runs-on: ubuntu-latest
+    strategy:
+      # Families deploy independently: one failing to build doesn't hold the others back.
+      fail-fast: false
+      matrix:
+        family: ${{ fromJson(needs.families.outputs.families) }}
     permissions:
       id-token: write
       contents: read
-    outputs:
-      sha: ${{ steps.build.outputs.sha }}
+    env:
+      SHA: ${{ needs.families.outputs.sha }}
+      FAMILY: ${{ matrix.family }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # The build fails if the family's pipelines don't import with only its extra installed.
       - name: Build image
-        id: build
         run: |
-          SHA=$(git rev-parse --short HEAD)
           docker build \
+            --build-arg FAMILY=$FAMILY \
             --build-arg GIT_SHA=$SHA \
-            -t gnome-pipelines:latest \
-            -t gnome-pipelines:$SHA \
+            -t gnome-pipelines:$FAMILY-latest \
+            -t gnome-pipelines:$FAMILY-$SHA \
             .
-          echo "SHA=$SHA" >> $GITHUB_ENV
-          echo "sha=$SHA" >> $GITHUB_OUTPUT
 
       - name: Configure AWS credentials (dev)
         uses: aws-actions/configure-aws-credentials@v4
@@ -48,29 +70,35 @@ jobs:
       - name: Push to dev ECR
         run: |
           REGISTRY=${{ steps.login-ecr-dev.outputs.registry }}
-          docker tag gnome-pipelines:latest $REGISTRY/gnome-pipelines:latest
-          docker tag gnome-pipelines:$SHA $REGISTRY/gnome-pipelines:$SHA
-          docker push $REGISTRY/gnome-pipelines:latest
-          docker push $REGISTRY/gnome-pipelines:$SHA
+          docker tag gnome-pipelines:$FAMILY-latest $REGISTRY/gnome-pipelines:$FAMILY-latest
+          docker tag gnome-pipelines:$FAMILY-$SHA $REGISTRY/gnome-pipelines:$FAMILY-$SHA
+          docker push $REGISTRY/gnome-pipelines:$FAMILY-latest
+          docker push $REGISTRY/gnome-pipelines:$FAMILY-$SHA
 
-      # From the image just pushed, so the API and the schedules describe the code that will run.
-      - name: Publish the pipeline manifest (dev)
+      # From the image just pushed, so the API and the schedules describe the code that will run. It replaces
+      # only this family's manifest entries.
+      - name: Publish the family's pipeline manifest (dev)
         run: |
           docker run --rm -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN -e AWS_REGION \
-            --entrypoint python gnome-pipelines:$SHA -m gnome_pipelines.manifest publish
+            --entrypoint python gnome-pipelines:$FAMILY-$SHA -m gnome_pipelines.manifest publish
 
   # Waits for a reviewer on the `prod` environment (repo Settings → Environments), so a push to
   # main reaches prod's scheduled runs only once someone has seen it work in dev. It promotes the
-  # exact image dev got rather than rebuilding it.
+  # exact images dev got rather than rebuilding them.
   prod:
-    needs: dev
+    needs: [families, dev]
     runs-on: ubuntu-latest
     environment: prod
+    strategy:
+      fail-fast: false
+      matrix:
+        family: ${{ fromJson(needs.families.outputs.families) }}
     permissions:
       id-token: write
       contents: read
     env:
-      SHA: ${{ needs.dev.outputs.sha }}
+      SHA: ${{ needs.families.outputs.sha }}
+      FAMILY: ${{ matrix.family }}
 
     steps:
       - name: Configure AWS credentials (dev)
@@ -84,7 +112,7 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Pull the dev image
-        run: docker pull ${{ steps.login-ecr-dev.outputs.registry }}/gnome-pipelines:$SHA
+        run: docker pull ${{ steps.login-ecr-dev.outputs.registry }}/gnome-pipelines:$FAMILY-$SHA
 
       - name: Configure AWS credentials (prod)
         uses: aws-actions/configure-aws-credentials@v4
@@ -98,15 +126,15 @@ jobs:
 
       - name: Push to prod ECR
         run: |
-          SOURCE=${{ steps.login-ecr-dev.outputs.registry }}/gnome-pipelines:$SHA
+          SOURCE=${{ steps.login-ecr-dev.outputs.registry }}/gnome-pipelines:$FAMILY-$SHA
           REGISTRY=${{ steps.login-ecr-prod.outputs.registry }}
-          docker tag $SOURCE $REGISTRY/gnome-pipelines:$SHA
-          docker tag $SOURCE $REGISTRY/gnome-pipelines:latest
-          docker push $REGISTRY/gnome-pipelines:$SHA
-          docker push $REGISTRY/gnome-pipelines:latest
+          docker tag $SOURCE $REGISTRY/gnome-pipelines:$FAMILY-$SHA
+          docker tag $SOURCE $REGISTRY/gnome-pipelines:$FAMILY-latest
+          docker push $REGISTRY/gnome-pipelines:$FAMILY-$SHA
+          docker push $REGISTRY/gnome-pipelines:$FAMILY-latest
 
-      - name: Publish the pipeline manifest (prod)
+      - name: Publish the family's pipeline manifest (prod)
         run: |
           docker run --rm -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN -e AWS_REGION \
-            --entrypoint python ${{ steps.login-ecr-dev.outputs.registry }}/gnome-pipelines:$SHA \
+            --entrypoint python ${{ steps.login-ecr-dev.outputs.registry }}/gnome-pipelines:$FAMILY-$SHA \
             -m gnome_pipelines.manifest publish
