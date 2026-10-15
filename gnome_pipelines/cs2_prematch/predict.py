@@ -13,13 +13,6 @@ gnome-launcher for one paper session per match.
    kickoff. Once, not every run: the launcher dedups only within a window and
    only against running sessions, so a repeat could schedule a second session
    for a match still waiting to start. What was sent is kept in cs2_prematch_matches.
-
-Params:
-  hours_ahead (24), lead_hours (12): session starts this long before kickoff,
-  shutdown_after_minutes (30), launch_queue_url, shutdown_queue_url,
-  dry_run (false): compute everything, publish and send nothing.
-  model_path: artifact URI or local path to price with instead of the latest
-    published pre-veto model (e.g. a candidate under evaluation).
 """
 from __future__ import annotations
 
@@ -28,12 +21,13 @@ import logging
 
 import boto3
 import pandas as pd
+from pydantic import Field, model_validator
 
 from gnomepy.data import DatasetStore, TableSpec, resolve_artifact_path
 from gnomepy.registry import RegistryClient
 from pyiceberg.exceptions import NoSuchTableError
 
-from gnome_pipelines import Pipeline, PipelineResult, register_pipeline
+from gnome_pipelines import Pipeline, PipelineParams, PipelineResult, register_pipeline
 from gnome_pipelines.cs2_prematch.model import price
 from gnome_pipelines.cs2_prematch.train import ARTIFACT_TYPE, MODEL_NAME
 from gnome_pipelines.datasets import cs2
@@ -194,18 +188,37 @@ def _series_won(history: pd.DataFrame) -> pd.Series:
     return decided.groupby("match_id").team_a_won.agg(lambda w: int(w.sum() * 2 > len(w)))
 
 
+class CS2PrematchPredictParams(PipelineParams):
+    hours_ahead: int = Field(24, gt=0, description="price BO3s kicking off within this many hours")
+    lead_hours: float = Field(12, gt=0, description="a match's paper session starts this long before kickoff")
+    shutdown_after_minutes: float = Field(30, ge=0, description="its session stops this long after kickoff")
+    launch_queue_url: str | None = Field(None, description="gnome-launcher's launch trigger queue")
+    shutdown_queue_url: str | None = Field(None, description="gnome-launcher's shutdown trigger queue")
+    dry_run: bool = Field(False, description="compute everything, publish and send nothing")
+    model_path: str | None = Field(None, description=(
+        "artifact URI or local path to price with instead of the latest published pre-veto model "
+        "(e.g. a candidate under evaluation)"))
+
+    @model_validator(mode="after")
+    def _queues_unless_dry_run(self) -> CS2PrematchPredictParams:
+        # Checked up front: the run records triggers as sent when it publishes, before it sends them.
+        if not self.dry_run and not (self.launch_queue_url and self.shutdown_queue_url):
+            raise ValueError("launch_queue_url and shutdown_queue_url are required unless dry_run")
+        return self
+
+
 @register_pipeline
-class CS2PrematchPredictPipeline(Pipeline):
+class CS2PrematchPredictPipeline(Pipeline[CS2PrematchPredictParams]):
     name = "cs2_prematch_predict"
 
-    def run(self, params: dict) -> PipelineResult:
+    def run(self, params: CS2PrematchPredictParams) -> PipelineResult:
         now = pd.Timestamp.now(tz="UTC").floor("s")
-        dry_run = bool(params.get("dry_run", False))
-        lead = pd.Timedelta(hours=params.get("lead_hours", 12))
-        shutdown_after = pd.Timedelta(minutes=params.get("shutdown_after_minutes", 30))
+        dry_run = params.dry_run
+        lead = pd.Timedelta(hours=params.lead_hours)
+        shutdown_after = pd.Timedelta(minutes=params.shutdown_after_minutes)
         ds = dataset_store()
 
-        upcoming = scrape_upcoming_matches(_make_session(), params.get("hours_ahead", 24))
+        upcoming = scrape_upcoming_matches(_make_session(), params.hours_ahead)
         history = ds.load("cs2_match_history")
         targets, page_h2h = build_targets(upcoming)
 
@@ -217,7 +230,8 @@ class CS2PrematchPredictPipeline(Pipeline):
                 player_stats=ds.load("cs2_player_map_stats"), veto=ds.load("cs2_match_veto"),
                 h2h=pd.concat([ds.load("cs2_h2h_history"), page_h2h], ignore_index=True),
             )
-            model_path, version = params.get("model_path"), params.get("model_path")
+            # An override is recorded under its own path, since it may not be a published version.
+            model_path = version = params.model_path
             if not model_path:
                 ref = artifact_store().latest(ARTIFACT_TYPE, MODEL_NAME)
                 model_path, version = str(ref), f"{MODEL_NAME}:{ref.version}"
@@ -248,10 +262,7 @@ class CS2PrematchPredictPipeline(Pipeline):
             publish(cs2.TEAM_ALIASES, aliases)
             publish(cs2.PREMATCH_MATCHES, state)
             sqs = boto3.client("sqs")
-            for queue, messages in ((params.get("launch_queue_url"), launches),
-                                    (params.get("shutdown_queue_url"), shutdowns)):
-                if messages and not queue:
-                    raise ValueError("launch_queue_url and shutdown_queue_url are required unless dry_run")
+            for queue, messages in ((params.launch_queue_url, launches), (params.shutdown_queue_url, shutdowns)):
                 for message in messages:
                     sqs.send_message(QueueUrl=queue, MessageBody=json.dumps(message))
 

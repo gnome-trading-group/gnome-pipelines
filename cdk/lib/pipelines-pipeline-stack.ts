@@ -5,12 +5,18 @@ import { Construct } from "constructs";
 import { Stage } from "@gnome-trading-group/gnome-shared-cdk";
 import { CONFIGS, GITHUB_BRANCH, GITHUB_REPO, PipelinesConfig } from "./config";
 import { DataStack } from "./stacks/data-stack";
+import { RunStack } from "./stacks/run-stack";
 
 class AppStage extends cdk.Stage {
   constructor(scope: Construct, id: string, config: PipelinesConfig) {
     super(scope, id, { env: config.account.environment });
 
-    new DataStack(this, "PipelinesDataStack", { stage: config.account.stage });
+    const data = new DataStack(this, "PipelinesDataStack", { stage: config.account.stage });
+    new RunStack(this, "PipelinesRunStack", {
+      stage: config.account.stage,
+      tableBucketArn: data.tableBucketArn,
+      secrets: data.secrets,
+    });
   }
 }
 

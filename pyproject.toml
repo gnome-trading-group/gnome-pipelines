@@ -5,6 +5,9 @@ description = "Data pipelines, ingestion and their infrastructure for gnome rese
 authors = ["mprey <masonprey7@gmail.com>"]
 readme = "README.md"
 
+[tool.poetry.scripts]
+gnome-pipelines = "gnome_pipelines.cli:main"
+
 [tool.poetry.dependencies]
 python = ">=3.13,<3.14"
 gnomepy = {version = "^2.25.2", extras = ["live-data"]}
@@ -15,6 +18,7 @@ zenrows = "^1.4.1"
 nodriver = "*"
 demoparser2 = "*"
 opencv-python = "*"
+pydantic = "^2.11"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.4.1"

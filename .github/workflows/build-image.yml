@@ -25,8 +25,8 @@ jobs:
           SHA=$(git rev-parse --short HEAD)
           docker build \
             --build-arg GIT_SHA=$SHA \
-            -t gnomepy-pipelines:latest \
-            -t gnomepy-pipelines:$SHA \
+            -t gnome-pipelines:latest \
+            -t gnome-pipelines:$SHA \
             .
           echo "SHA=$SHA" >> $GITHUB_ENV
 
@@ -43,10 +43,10 @@ jobs:
       - name: Push to dev ECR
         run: |
           REGISTRY=${{ steps.login-ecr-dev.outputs.registry }}
-          docker tag gnomepy-pipelines:latest $REGISTRY/gnomepy-pipelines:latest
-          docker tag gnomepy-pipelines:$SHA $REGISTRY/gnomepy-pipelines:$SHA
-          docker push $REGISTRY/gnomepy-pipelines:latest
-          docker push $REGISTRY/gnomepy-pipelines:$SHA
+          docker tag gnome-pipelines:latest $REGISTRY/gnome-pipelines:latest
+          docker tag gnome-pipelines:$SHA $REGISTRY/gnome-pipelines:$SHA
+          docker push $REGISTRY/gnome-pipelines:latest
+          docker push $REGISTRY/gnome-pipelines:$SHA
 
       - name: Configure AWS credentials (prod)
         uses: aws-actions/configure-aws-credentials@v4
@@ -61,7 +61,7 @@ jobs:
       - name: Push to prod ECR
         run: |
           REGISTRY=${{ steps.login-ecr-prod.outputs.registry }}
-          docker tag gnomepy-pipelines:latest $REGISTRY/gnomepy-pipelines:latest
-          docker tag gnomepy-pipelines:$SHA $REGISTRY/gnomepy-pipelines:$SHA
-          docker push $REGISTRY/gnomepy-pipelines:latest
-          docker push $REGISTRY/gnomepy-pipelines:$SHA
+          docker tag gnome-pipelines:latest $REGISTRY/gnome-pipelines:latest
+          docker tag gnome-pipelines:$SHA $REGISTRY/gnome-pipelines:$SHA
+          docker push $REGISTRY/gnome-pipelines:latest
+          docker push $REGISTRY/gnome-pipelines:$SHA

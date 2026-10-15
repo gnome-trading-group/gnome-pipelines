@@ -17,6 +17,9 @@ export interface DataStackProps extends cdk.StackProps {
 }
 
 export class DataStack extends cdk.Stack {
+  public readonly tableBucketArn: string;
+  public readonly secrets: secretsmanager.ISecret[] = [];
+
   constructor(scope: Construct, id: string, props: DataStackProps) {
     super(scope, id, props);
 
@@ -26,6 +29,7 @@ export class DataStack extends cdk.Stack {
       tableBucketName: "gnome-research-tables",
     });
     bucket.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN);
+    this.tableBucketArn = bucket.attrTableBucketArn;
 
     for (const namespace of NAMESPACES) {
       const ns = new s3tables.CfnNamespace(this, `Namespace-${namespace}`, {
@@ -55,6 +59,7 @@ export class DataStack extends cdk.Stack {
         description: "gnome-pipelines secret; set its value with put-secret-value",
       });
       secret.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN);
+      this.secrets.push(secret);
     }
   }
 }

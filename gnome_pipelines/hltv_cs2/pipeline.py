@@ -1,34 +1,33 @@
-"""Weekly HLTV CS2 data collection pipeline — runs on ECS Fargate via gnome-controller.
-
-Params (passed via PIPELINE_PARAMS env var):
-  start_date: str  — YYYY-MM-DD
-  end_date: str    — YYYY-MM-DD
-  min_stars: int   — 0=all matches, 2=top-tier+, 3=big events only (default 2).
-                     The models are trained on all tiers, so 0 keeps the data consistent.
-"""
+"""Weekly HLTV CS2 data collection: matches and rankings in a date range, then the priors rebuilt from everything."""
 from __future__ import annotations
 
 import datetime
 import logging
 
-from gnome_pipelines import Pipeline, PipelineResult, register_pipeline
+from pydantic import Field
+
+from gnome_pipelines import Pipeline, PipelineParams, PipelineResult, register_pipeline
 from gnome_pipelines.hltv_cs2.publish import publish_priors
 from gnome_pipelines.hltv_cs2.scraper import run_matches, run_rankings
 
 logger = logging.getLogger(__name__)
 
 
+class HltvCs2Params(PipelineParams):
+    start_date: datetime.date = Field(description="first match day to scrape")
+    end_date: datetime.date = Field(description="last match day to scrape")
+    min_stars: int = Field(2, ge=0, le=5, description=(
+        "HLTV event stars: 0 = every match, 2 = top tier, 3 = big events. "
+        "The models are trained on all tiers, so 0 keeps the data consistent."))
+
+
 @register_pipeline
-class HltvCs2Pipeline(Pipeline):
+class HltvCs2Pipeline(Pipeline[HltvCs2Params]):
     name = "hltv_cs2"
 
-    def run(self, params: dict) -> PipelineResult:
-        start_date = datetime.date.fromisoformat(params["start_date"])
-        end_date = datetime.date.fromisoformat(params["end_date"])
-        min_stars = params.get("min_stars", 2)
-
-        match_df = run_matches(start_date, end_date, min_stars=min_stars)
-        rankings_df = run_rankings(start_date, end_date)
+    def run(self, params: HltvCs2Params) -> PipelineResult:
+        match_df = run_matches(params.start_date, params.end_date, min_stars=params.min_stars)
+        rankings_df = run_rankings(params.start_date, params.end_date)
         priors = publish_priors()
 
         return PipelineResult(
