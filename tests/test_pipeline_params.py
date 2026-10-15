@@ -5,7 +5,7 @@ import pytest
 from pydantic import ValidationError
 
 from gnome_pipelines import PIPELINE_REGISTRY
-from gnome_pipelines.cs2_prematch.predict import CS2PrematchPredictParams
+from gnome_pipelines.cs2_upcoming.pipeline import CS2UpcomingParams
 from gnome_pipelines.hltv_cs2.pipeline import HltvCs2Params
 from gnome_pipelines.runner import execute
 
@@ -14,7 +14,7 @@ def test_every_registered_pipeline_declares_its_params():
     assert {name: cls.params_type.__name__ for name, cls in PIPELINE_REGISTRY.items()} == {
         "hltv_cs2": "HltvCs2Params",
         "cs2_prematch_train": "CS2PrematchTrainParams",
-        "cs2_prematch_predict": "CS2PrematchPredictParams",
+        "cs2_upcoming": "CS2UpcomingParams",
     }
 
 
@@ -25,15 +25,15 @@ def test_text_values_become_their_declared_types():
 
 
 def test_the_string_false_is_false():
-    assert CS2PrematchPredictParams.model_validate({"dry_run": "false", "launch_queue_url": "q",
-                                                    "shutdown_queue_url": "q"}).dry_run is False
+    assert CS2UpcomingParams.model_validate({"dry_run": "false"}).dry_run is False
 
 
-def test_a_real_predict_run_needs_both_queues_up_front():
-    with pytest.raises(ValidationError, match="launch_queue_url and shutdown_queue_url"):
-        CS2PrematchPredictParams.model_validate({"launch_queue_url": "q"})
+def test_refetch_bands_are_sorted_widest_first_and_must_be_positive():
+    params = CS2UpcomingParams.model_validate({"refetch_bands": [[1, 15], [12, 120], [2, 20]]})
+    assert params.refetch_bands == [(12, 120), (2, 20), (1, 15)]
 
-    assert CS2PrematchPredictParams.model_validate({"dry_run": True}).dry_run
+    with pytest.raises(ValidationError, match="refetch_bands"):
+        CS2UpcomingParams.model_validate({"refetch_bands": [[2, 0]]})
 
 
 def test_execute_rejects_unknown_and_missing_params_before_running():

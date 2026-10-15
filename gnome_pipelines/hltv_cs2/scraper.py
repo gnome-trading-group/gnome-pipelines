@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 _BASE_URL = "https://www.hltv.org"
 _ZENROWS_PARAMS = {"js_render": True, "premium_proxy": True}
+CREDITS_PER_PAGE = 25
 
 
 class _Session:
@@ -36,11 +37,14 @@ class _Session:
 
     def __init__(self) -> None:
         self._client = ZenRowsClient(secret("zenrows", "ZENROWS_API_KEY"))
+        # ZenRows bills every 200, including the truncated pages _get_html retries.
+        self.billed = 0
 
     def get_html(self, url: str) -> str | None:
         try:
             resp = self._client.get(url, params=_ZENROWS_PARAMS)
             if resp.status_code == 200:
+                self.billed += 1
                 return resp.text
             logger.warning("ZenRows HTTP %s for %s", resp.status_code, url)
             return None

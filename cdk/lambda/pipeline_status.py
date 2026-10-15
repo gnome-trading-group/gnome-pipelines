@@ -2,7 +2,7 @@
 
 Triggered by the EventBridge rule on the cluster's task-stopped events. The runner records a failure itself before
 exiting; this marks the ones it couldn't (OOM kills, container crashes). Either way a failed run is put on the alert
-bus: a scheduled run's output can feed trading (a launcher rule reads cs2_prematch_predict), so it's an ERROR; a manual
+bus: a scheduled run's output can feed trading (the CS2 strategies and launcher read cs2_upcoming), so it's an ERROR; a manual
 one is only for the record, since whoever started it sees it fail.
 """
 from __future__ import annotations

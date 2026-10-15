@@ -20,7 +20,8 @@ from botocore.exceptions import ClientError
 from gnome_pipelines import PIPELINE_REGISTRY, PipelineResult
 from gnome_pipelines.environment import environment
 from gnome_pipelines.stores import code_version
-from gnome_pipelines.cs2_prematch import CS2PrematchPredictPipeline, CS2PrematchTrainPipeline  # noqa: F401 — registers pipelines
+from gnome_pipelines.cs2_prematch import CS2PrematchTrainPipeline  # noqa: F401 — registers pipeline
+from gnome_pipelines.cs2_upcoming import CS2UpcomingPipeline  # noqa: F401 — registers pipeline
 from gnome_pipelines.hltv_cs2 import HltvCs2Pipeline  # noqa: F401 — registers pipeline
 
 logger = logging.getLogger(__name__)

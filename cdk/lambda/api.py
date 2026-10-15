@@ -15,11 +15,13 @@ from __future__ import annotations
 import json
 import os
 import re
+from datetime import datetime, timezone
 
 import boto3
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
+from cron import next_run
 from store import SCHEDULE_GROUP, api_path, manifest, now, pipeline, public, response, run_key, schedule_name, table
 
 TRIGGER_FUNCTION = os.environ["TRIGGER_FUNCTION"]
@@ -159,12 +161,17 @@ def _schedule_states() -> dict[str, str]:
 
 
 def _describe(declared: dict, states: dict[str, str]) -> dict:
-    schedules = [
-        {**s, "enabled": states.get(schedule_name(declared["name"], s["name"])) == "ENABLED",
-         # A schedule the sync hasn't created yet (or failed to) can't be switched on.
-         "synced": schedule_name(declared["name"], s["name"]) in states}
-        for s in declared["schedules"]
-    ]
+    now = datetime.now(timezone.utc)
+    schedules = []
+    for s in declared["schedules"]:
+        enabled = states.get(schedule_name(declared["name"], s["name"])) == "ENABLED"
+        upcoming = next_run(s["expression"], now) if enabled else None
+        schedules.append({
+            **s, "enabled": enabled,
+            # A schedule the sync hasn't created yet (or failed to) can't be switched on.
+            "synced": schedule_name(declared["name"], s["name"]) in states,
+            "next_run": upcoming.isoformat() if upcoming else None,
+        })
     return {**declared, "schedules": schedules}
 
 

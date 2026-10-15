@@ -311,49 +311,59 @@ MATCH_PRIORS = TableSpec(
 )
 
 
-PREMATCH_PREDICTIONS = TableSpec(
-    "cs2_prematch_predictions",
-    pa.schema([
-        pa.field("match_id", pa.int64(), nullable=False),
-        pa.field("market", pa.string(), nullable=False),
-        pa.field("p_team_a", pa.float64()),
-        pa.field("rank_known_both", pa.float64()),
-        pa.field("kickoff", pa.timestamp("us", tz="UTC")),
-        pa.field("model_version", pa.string()),
-        pa.field("generated_at", pa.timestamp("us", tz="UTC"), nullable=False),
-    ]),
-    key=("match_id", "market", "generated_at"),
-    partition_by=("generated_at", "day"),
-)
-
-PREMATCH_PREDICTION_INPUTS = TableSpec(
-    "cs2_prematch_prediction_inputs",
-    pa.schema([*MATCH_PRIORS.schema, pa.field("generated_at", pa.timestamp("us", tz="UTC"), nullable=False)]),
-    key=("match_id", "map_name", "generated_at"),
-    partition_by=("generated_at", "day"),
-)
-
-# learned and markets are JSON lists. updated_at moves every run, so each run appends a
-# row per tracked match; the newest row is the match's state.
-PREMATCH_MATCHES = TableSpec(
-    "cs2_prematch_matches",
+# The cs2_upcoming pipeline's tables. Each run appends; the newest row per match is its state.
+# markets and learned are JSON lists. status is upcoming, live, or missing (gone from HLTV's
+# listing for MISSING_AFTER consecutive successful listings: postponed, cancelled or finished).
+UPCOMING_MATCHES = TableSpec(
+    "cs2_upcoming_matches",
     pa.schema([
         pa.field("match_id", pa.int64(), nullable=False),
         pa.field("team_a_id", pa.int64()),
         pa.field("team_b_id", pa.int64()),
+        pa.field("team_a_name", pa.string()),
+        pa.field("team_b_name", pa.string()),
         pa.field("kickoff", pa.timestamp("us", tz="UTC")),
+        pa.field("stars", pa.int64()),
+        pa.field("status", pa.string()),
+        pa.field("missed_listings", pa.int64()),
+        pa.field("features_at", pa.timestamp("us", tz="UTC")),
         pa.field("series_slug", pa.string()),
         pa.field("team_a_outcome", pa.int64()),
-        pa.field("learned", pa.string()),
         pa.field("markets", pa.string()),
-        pa.field("launch_at", pa.timestamp("us", tz="UTC")),
-        pa.field("launch_sent_at", pa.timestamp("us", tz="UTC")),
-        pa.field("shutdown_sent_at", pa.timestamp("us", tz="UTC")),
+        pa.field("learned", pa.string()),
         pa.field("alias_settled", pa.bool_()),
-        pa.field("first_seen", pa.timestamp("us", tz="UTC")),
-        pa.field("updated_at", pa.timestamp("us", tz="UTC")),
+        pa.field("generated_at", pa.timestamp("us", tz="UTC"), nullable=False),
     ]),
-    key=("match_id",),
+    key=("match_id", "generated_at"),
+    partition_by=("generated_at", "day"),
+)
+
+# One feature row per match page fetched: what the strategies price from, as of generated_at.
+UPCOMING_FEATURES = TableSpec(
+    "cs2_upcoming_features",
+    pa.schema([
+        *MATCH_PRIORS.schema,
+        pa.field("team_a_lineup_ids", pa.list_(pa.int64())),
+        pa.field("team_b_lineup_ids", pa.list_(pa.int64())),
+        pa.field("generated_at", pa.timestamp("us", tz="UTC"), nullable=False),
+    ]),
+    key=("match_id", "map_name", "generated_at"),
+    partition_by=("generated_at", "day"),
+)
+
+# What each run spent, so the daily ZenRows budget can be enforced across runs.
+UPCOMING_RUNS = TableSpec(
+    "cs2_upcoming_runs",
+    pa.schema([
+        pa.field("generated_at", pa.timestamp("us", tz="UTC"), nullable=False),
+        pa.field("listing_ok", pa.bool_()),
+        pa.field("pages_fetched", pa.int64()),
+        pa.field("credits", pa.int64()),
+        pa.field("over_budget", pa.bool_()),
+        pa.field("tracked", pa.int64()),
+    ]),
+    key=("generated_at",),
+    partition_by=("generated_at", "day"),
 )
 
 TEAM_ALIASES = TableSpec(
@@ -371,4 +381,4 @@ TEAM_ALIASES = TableSpec(
 )
 
 ALL = (MATCH_HISTORY, PLAYER_MAP_STATS, MATCH_VETO, H2H_HISTORY, TEAM_RECENT_FORM, ROUND_FEATURES, TEAM_RANKINGS,
-       MATCH_PRIORS, PREMATCH_PREDICTIONS, PREMATCH_PREDICTION_INPUTS, PREMATCH_MATCHES, TEAM_ALIASES)
+       MATCH_PRIORS, UPCOMING_MATCHES, UPCOMING_FEATURES, UPCOMING_RUNS, TEAM_ALIASES)

@@ -3,7 +3,7 @@
     gnome-pipelines list
     gnome-pipelines describe hltv_cs2
     gnome-pipelines run hltv_cs2 --stage dev -p start_date=2026-10-11 -p end_date=2026-10-13 -p min_stars=0
-    gnome-pipelines run cs2_prematch_predict --stage prod --params '{"dry_run": true}'
+    gnome-pipelines run cs2_upcoming --stage prod --params '{"dry_run": true}'
 
 --stage picks the data and the credentials together: dev and prod use the AWS profile of that name, and local
 writes to a SQLite warehouse on disk. A local run records no run item; its outputs are printed instead.

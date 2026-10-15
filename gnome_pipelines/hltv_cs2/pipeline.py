@@ -62,8 +62,10 @@ class HltvCs2Pipeline(Pipeline[HltvCs2Params]):
     description = "HLTV matches, player stats, veto, head-to-head, form and rankings; then the match priors rebuilt"
     resources = Resources(cpu=2048, memory=8192)
     schedules = (
-        Schedule("weekly", "cron(0 6 ? * MON *)", {"days_back": 8, "min_stars": 0},
-                 "Mondays 06:00 UTC: the last 8 days, every tier (one day of overlap; cached pages cost nothing)"),
+        # Daily, not weekly: cs2_upcoming builds live features from this history, and a week-old
+        # history leaves Elo and form a week behind the matches being priced.
+        Schedule("daily", "cron(0 6 * * ? *)", {"days_back": 2, "min_stars": 0},
+                 "06:00 UTC: the last 2 days, every tier (one day of overlap; cached pages cost nothing)"),
     )
 
     def run(self, params: HltvCs2Params) -> PipelineResult:

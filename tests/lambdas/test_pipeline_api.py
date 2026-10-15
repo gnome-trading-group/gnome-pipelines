@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 
 import pytest
 
@@ -146,3 +147,15 @@ def event_path(path: str) -> dict:
     if not rest:
         return {"resource": f"/research/{root}", "pathParameters": None}
     return {"resource": f"/research/{root}/{{proxy+}}", "pathParameters": {"proxy": rest}}
+
+
+def test_a_switched_on_schedule_reports_its_next_run(aws):
+    sync_schedules.handler({}, None)
+    call("PUT", "/research/pipelines/hltv_cs2/schedules/weekly", {"enabled": True})
+
+    _, body = call("GET", "/research/pipelines/hltv_cs2")
+
+    schedule = body["pipeline"]["schedules"][0]
+    upcoming = datetime.fromisoformat(schedule["next_run"])
+    assert upcoming.weekday() == 0 and (upcoming.hour, upcoming.minute) == (6, 0)
+    assert upcoming > datetime.now(timezone.utc)
