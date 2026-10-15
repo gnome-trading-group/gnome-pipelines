@@ -9,3 +9,5 @@ cdk.out
 
 # Ignore Dockerfiles produced dynamically
 /*/**/Dockerfile
+# The data API image is written by hand, not produced.
+!/data-api/Dockerfile
