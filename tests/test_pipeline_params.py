@@ -38,3 +38,21 @@ def test_execute_rejects_unknown_and_missing_params_before_running():
         execute("hltv_cs2", {"start_date": "2026-10-11", "min_star": 0})
 
     assert {err["loc"][0] for err in e.value.errors()} == {"end_date", "min_star"}
+
+
+def test_demos_need_the_chrome_fetcher_and_cache_has_nothing_to_refresh():
+    base = {"start_date": "2026-10-11", "end_date": "2026-10-13"}
+
+    with pytest.raises(ValidationError, match="fetcher=chrome"):
+        HltvCs2Params.model_validate({**base, "demos": True})
+    with pytest.raises(ValidationError, match="refresh"):
+        HltvCs2Params.model_validate({**base, "fetcher": "cache", "refresh": True})
+    assert HltvCs2Params.model_validate({**base, "fetcher": "chrome", "demos": True}).demos
+
+
+def test_chrome_is_refused_inside_a_fargate_task(monkeypatch):
+    monkeypatch.setenv("GNOME_STAGE", "dev")
+    monkeypatch.setenv("ECS_CONTAINER_METADATA_URI_V4", "http://169.254.170.2/v4/x")
+
+    with pytest.raises(ValueError, match="run it locally"):
+        execute("hltv_cs2", {"start_date": "2026-10-11", "end_date": "2026-10-13", "fetcher": "chrome"})

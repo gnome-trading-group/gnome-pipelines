@@ -9,14 +9,14 @@ through `gnomepy.data`; gnomepy-research holds the feature and model code these 
 | `gnome_pipelines/datasets/` | Table schemas (`TableSpec`), one module per domain. Readers don't need them: `load(name)` takes the key from the table. |
 | `gnome_pipelines/stores.py` | Stores stamped with the build's code version and the run id; every writer publishes through them. |
 | `gnome_pipelines/credentials.py` | `secret(name, env_var)`: the environment variable locally, else the `gnome/pipelines/<name>` secret |
-| `gnome_pipelines/hltv_cs2/` | HLTV scraper, local backfill, page cache, demo parser, publishing, the weekly `hltv_cs2` pipeline |
+| `gnome_pipelines/hltv_cs2/` | The `hltv_cs2` pipeline: parsers (`scraper.py`), page sources (`fetch.py`: ZenRows, cache; `chrome.py`: local Chrome + demos), the collection loops (`collect.py`), page cache, demo parser, publishing |
 | `gnome_pipelines/cs2_prematch/` | `cs2_prematch_train` and `cs2_prematch_predict` pipelines |
 | `gnome_pipelines/cs2_round_model/` | Round win probability model training |
 | `gnome_pipelines/cfb/` | CFBD ingestion, quality checks, feature snapshots, team-week posteriors |
 | `gnome_pipelines/cli.py` | `gnome-pipelines run <pipeline> --stage local\|dev\|prod`: a registered pipeline on your machine |
 | `gnome_pipelines/environment.py` | `environment()`: the run's stage (`local`/`dev`/`prod`) and whether it's in a Fargate task |
 | `gnome_pipelines/runner.py` | Fargate entry point the trigger Lambda starts (`PIPELINE_NAME`, `RUN_ID`, `PIPELINE_PARAMS`); records the run's status |
-| `Dockerfile`, `.github/workflows/build-image.yml` | The `gnome-pipelines` image, pushed to ECR in dev and prod on every push to main |
+| `Dockerfile`, `.github/workflows/build-image.yml` | The `gnome-pipelines` image: every push to main goes to dev ECR, then to prod once approved on the `prod` GitHub environment |
 | `cdk/lib/stacks/data-stack.ts` | The S3 Tables bucket, its namespaces, the SSM parameters `gnomepy.data` finds it by, and the pipeline secrets |
 | `cdk/lib/stacks/run-stack.ts` | Running pipelines: ECR repo, Fargate cluster and task, the `gnome-pipelines` runs table, schedules, alarms |
 | `cdk/lambda/` | The pipelines API (list, create, get, update, trigger) and the task-stopped status handler |
@@ -40,6 +40,11 @@ poetry run gnome-pipelines describe hltv_cs2                              # its 
 poetry run gnome-pipelines run hltv_cs2 --stage dev -p start_date=2026-10-11 -p end_date=2026-10-13 -p min_stars=0
 poetry run gnome-pipelines run cs2_prematch_predict --stage prod --params '{"dry_run": true}'
 poetry run gnome-pipelines run cs2_prematch_train --stage local          # ~/.cache/gnome-pipelines/warehouse
+
+# HLTV through a visible Chrome window instead of ZenRows, with demos for the round features
+poetry run gnome-pipelines run hltv_cs2 --stage dev -p fetcher=chrome -p demos=true -p start_date=… -p end_date=…
+# Re-parse already-cached pages after a parser change: no network
+poetry run gnome-pipelines run hltv_cs2 --stage dev -p fetcher=cache -p start_date=… -p end_date=…
 ```
 
 It runs the same `execute()` as the Fargate task, which first validates the parameters against the

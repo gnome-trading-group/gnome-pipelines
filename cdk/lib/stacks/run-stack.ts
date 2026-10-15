@@ -31,6 +31,7 @@ const CONTAINER_NAME = "pipeline";
 // The registry's alerting stack names its bus, so any service can put alerts on it without depending on that stack.
 const ALERT_BUS_NAME = "gnome-alerts";
 const LAMBDA_RUNTIME = lambda.Runtime.PYTHON_3_13;
+const GITHUB_SUBJECT = "repo:gnome-trading-group@160680294/gnome-pipelines@1410629960";
 
 const TABLE_READ_ACTIONS = [
   "s3tables:GetTableBucket",
@@ -76,8 +77,12 @@ export class RunStack extends cdk.Stack {
         StringEquals: {
           "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
           // gnome-pipelines gets GitHub's ID-qualified subject (owner@id/repo@id), not the older owner/repo form.
-          "token.actions.githubusercontent.com:sub":
-            "repo:gnome-trading-group@160680294/gnome-pipelines@1410629960:ref:refs/heads/main",
+          // A job tied to an environment gets the environment instead of the branch: the image workflow's
+          // prod job (behind the prod environment's reviewers) pulls from dev ECR and pushes to prod.
+          "token.actions.githubusercontent.com:sub": [
+            `${GITHUB_SUBJECT}:ref:refs/heads/main`,
+            `${GITHUB_SUBJECT}:environment:prod`,
+          ],
         },
       }),
       description: "GitHub Actions in gnome-pipelines pushes the pipelines image",

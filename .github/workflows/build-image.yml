@@ -10,17 +10,20 @@ on:
       - 'poetry.lock'
 
 jobs:
-  build-and-push:
+  dev:
     runs-on: ubuntu-latest
     permissions:
       id-token: write
       contents: read
+    outputs:
+      sha: ${{ steps.build.outputs.sha }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Build image
+        id: build
         run: |
           SHA=$(git rev-parse --short HEAD)
           docker build \
@@ -29,6 +32,7 @@ jobs:
             -t gnome-pipelines:$SHA \
             .
           echo "SHA=$SHA" >> $GITHUB_ENV
+          echo "sha=$SHA" >> $GITHUB_OUTPUT
 
       - name: Configure AWS credentials (dev)
         uses: aws-actions/configure-aws-credentials@v4
@@ -48,6 +52,33 @@ jobs:
           docker push $REGISTRY/gnome-pipelines:latest
           docker push $REGISTRY/gnome-pipelines:$SHA
 
+  # Waits for a reviewer on the `prod` environment (repo Settings → Environments), so a push to
+  # main reaches prod's scheduled runs only once someone has seen it work in dev. It promotes the
+  # exact image dev got rather than rebuilding it.
+  prod:
+    needs: dev
+    runs-on: ubuntu-latest
+    environment: prod
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      SHA: ${{ needs.dev.outputs.sha }}
+
+    steps:
+      - name: Configure AWS credentials (dev)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ECR_ROLE_ARN_DEV }}
+          aws-region: us-east-1
+
+      - name: Login to ECR (dev)
+        id: login-ecr-dev
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Pull the dev image
+        run: docker pull ${{ steps.login-ecr-dev.outputs.registry }}/gnome-pipelines:$SHA
+
       - name: Configure AWS credentials (prod)
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -60,8 +91,9 @@ jobs:
 
       - name: Push to prod ECR
         run: |
+          SOURCE=${{ steps.login-ecr-dev.outputs.registry }}/gnome-pipelines:$SHA
           REGISTRY=${{ steps.login-ecr-prod.outputs.registry }}
-          docker tag gnome-pipelines:latest $REGISTRY/gnome-pipelines:latest
-          docker tag gnome-pipelines:$SHA $REGISTRY/gnome-pipelines:$SHA
-          docker push $REGISTRY/gnome-pipelines:latest
+          docker tag $SOURCE $REGISTRY/gnome-pipelines:$SHA
+          docker tag $SOURCE $REGISTRY/gnome-pipelines:latest
           docker push $REGISTRY/gnome-pipelines:$SHA
+          docker push $REGISTRY/gnome-pipelines:latest

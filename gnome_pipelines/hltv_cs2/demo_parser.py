@@ -1,7 +1,7 @@
 """
 CS2 demo parser — reads local .dem files and emits per-round snapshot DataFrames.
 
-Demo files are downloaded locally via backfill.py using nodriver.
+Demo files are downloaded through a local Chrome window (chrome.py), via the hltv_cs2 pipeline with fetcher=chrome and demos=true.
 
 Usage:
     python -m gnome_pipelines.hltv_cs2.demo_parser \\

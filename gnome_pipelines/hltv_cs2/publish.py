@@ -1,5 +1,5 @@
 """
-Publishing for the HLTV datasets, shared by the local backfill and the production pipeline.
+Publishing for the HLTV datasets, used by every hltv_cs2 fetcher (zenrows, chrome, cache).
 
 One path on purpose: the production pipeline once published only match history,
 so its priors were rebuilt without the harvested datasets and player stats, veto,
@@ -40,7 +40,10 @@ def publish_match_data(match_rows: list[dict], demo_rows: list[dict], player_row
     publish(cs2.MATCH_HISTORY, match_rows)
     publish(cs2.PLAYER_MAP_STATS, player_rows or [])
     publish(cs2.MATCH_VETO, veto_rows or [])
-    publish(cs2.H2H_HISTORY, h2h_rows or [])
+    # A meeting on a map outside the pool (a forfeit's "Default", a retired map) parses with no
+    # map_name, but still counts toward the head-to-head features and map_name is part of the key.
+    # The migrated table stores those as "", so live rows must too or they'd land under new keys.
+    publish(cs2.H2H_HISTORY, [{**r, "map_name": r["map_name"] or ""} for r in h2h_rows or []])
     publish(cs2.TEAM_RECENT_FORM, form_rows or [])
 
     if demo_rows:
