@@ -10,7 +10,7 @@ gnome-pipelines = "gnome_pipelines.cli:main"
 
 [tool.poetry.dependencies]
 python = ">=3.13,<3.14"
-gnomepy = {version = "^2.25.2", extras = ["live-data"]}
+gnomepy = {version = "^2.26.1", extras = ["live-data"]}
 gnomepy-research = {git = "https://github.com/gnome-trading-group/gnomepy-research.git", tag = "v1.0.0"}
 beautifulsoup4 = "*"
 lxml = "^6.0"
