@@ -16,6 +16,7 @@ from pathlib import Path
 
 import nodriver as uc
 from nodriver import cdp
+from nodriver.core import util as nodriver_util
 
 from gnome_pipelines.hltv_cs2.fetch import RateLimited
 
@@ -26,6 +27,7 @@ _DEMO_TMP = Path("/tmp/hltv_demo")
 _CHROME_PROFILE = Path.home() / ".cache" / "hltv_backfill_chrome"
 _DOWNLOAD_TIMEOUT = 300  # seconds to wait for a demo download
 _CF_TIMEOUT = 120        # seconds to wait for CF challenge resolution
+_START_ATTEMPTS = 3
 
 _CF_PHRASES = (
     "Just a moment",
@@ -316,6 +318,43 @@ def _extract_dem(archive_path: Path) -> list[Path]:
     return []
 
 
+async def _stop_browser(browser: uc.Browser) -> None:
+    # Every tab holds its own websocket with a reader task. Browser.stop() only schedules
+    # the browser's own close and then kills Chrome, leaving those readers on dead sockets,
+    # and nodriver's reader retries any error forever without yielding.
+    for target in browser.targets:
+        await target.aclose()
+    await browser.aclose()
+    # stop() forgets the process it terminates; Chrome's exit has to be reaped on this
+    # loop, or asyncio reports it against a closed one.
+    process = browser._process
+    browser.stop()
+    nodriver_util.get_registered_instances().discard(browser)
+    if process is not None:
+        await process.wait()
+    # stop() also queues another aclose() on this loop; let it finish before the loop closes.
+    await asyncio.sleep(0)
+
+
+async def _start_browser() -> uc.Browser:
+    """
+    nodriver gives Chrome under 3 s to open its debugging port, and that isn't configurable;
+    a cold start on a large profile can take longer. The failed attempt's Chrome is left
+    running and holding the profile, which would make the next attempt fail too, so it is
+    stopped first.
+    """
+    for attempt in range(1, _START_ATTEMPTS):
+        try:
+            return await uc.start(headless=False, user_data_dir=str(_CHROME_PROFILE))
+        # nodriver raises a bare Exception when it can't connect.
+        except Exception:
+            logger.warning("Chrome didn't open its debugging port in time (attempt %d/%d) — retrying",
+                           attempt, _START_ATTEMPTS)
+            for browser in list(nodriver_util.get_registered_instances()):
+                await _stop_browser(browser)
+    return await uc.start(headless=False, user_data_dir=str(_CHROME_PROFILE))
+
+
 class ChromeSource:
     """
     A page source over one Chrome tab, started on the first page actually fetched.
@@ -327,6 +366,7 @@ class ChromeSource:
 
     concurrency = 1
     can_be_blocked = True
+    billed = 0
 
     def __init__(self) -> None:
         self._browser = None
@@ -337,7 +377,7 @@ class ChromeSource:
             _DEMO_TMP.mkdir(parents=True, exist_ok=True)
             _CHROME_PROFILE.mkdir(parents=True, exist_ok=True)
             logger.info("starting Chrome (first cache miss)")
-            self._browser = await uc.start(headless=False, user_data_dir=str(_CHROME_PROFILE))
+            self._browser = await _start_browser()
             self._page = await self._browser.get("about:blank")
             await self._page.send(uc.cdp.browser.set_download_behavior(
                 behavior="allow", download_path=str(_DEMO_TMP), events_enabled=True,
@@ -354,8 +394,9 @@ class ChromeSource:
         archive = await _download_demo(await self.page(), demo_url)
         return _extract_dem(archive) if archive is not None else []
 
-    def stop(self) -> None:
-        if self._browser is not None:
-            self._browser.stop()
-            self._browser = None
-            self._page = None
+    async def close(self) -> None:
+        if self._browser is None:
+            return
+        await _stop_browser(self._browser)
+        self._browser = None
+        self._page = None

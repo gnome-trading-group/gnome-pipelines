@@ -1,0 +1,90 @@
+{
+ "events": [
+  {
+   "slug": "cs2-fly-ocf-2026-10-16",
+   "title": "FlyQuest vs. Off Chops",
+   "startTime": "2026-10-16T00:00:00Z",
+   "seriesSlug": "cs2",
+   "markets": [
+    {
+     "slug": "aec-cs2-fly-ocf-2026-10-16",
+     "question": "Who will win in the upcoming esports event FlyQuest vs Off Chops scheduled for October 16, 2026 at 12:00 AM UTC?",
+     "sportsMarketType": "esports_match_winner",
+     "gameStartTime": "2026-10-16T00:00:00Z",
+     "outcomes": "[\"FlyQuest\",\"Off Chops\"]",
+     "outcomePrices": "[\"0.8800\",\"0.9400\"]",
+     "closed": false,
+     "status": "MARKET_STATUS_OPEN",
+     "marketSides": [
+      {
+       "long": true,
+       "description": "FlyQuest",
+       "team": {
+        "name": "FlyQuest"
+       }
+      },
+      {
+       "long": false,
+       "description": "Off Chops",
+       "team": {
+        "name": "Off Chops"
+       }
+      }
+     ]
+    },
+    {
+     "slug": "astatc-cs2-fly-ocf-2026-10-16-map2",
+     "question": "Will FlyQuest win Map 2 vs Off Chops?",
+     "sportsMarketType": "esports_map_winner_2",
+     "gameStartTime": "2026-10-16T00:00:00Z",
+     "outcomes": "[\"Yes\",\"No\"]",
+     "outcomePrices": "[\"0.5000\",\"0.9300\"]",
+     "closed": false,
+     "status": "MARKET_STATUS_OPEN",
+     "marketSides": [
+      {
+       "long": true,
+       "description": "Yes",
+       "team": {
+        "name": "FlyQuest"
+       }
+      },
+      {
+       "long": false,
+       "description": "No",
+       "team": {
+        "name": "FlyQuest"
+       }
+      }
+     ]
+    },
+    {
+     "slug": "astatc-cs2-fly-ocf-2026-10-16-map1",
+     "question": "Will FlyQuest win Map 1 vs Off Chops?",
+     "sportsMarketType": "esports_map_winner_1",
+     "gameStartTime": "2026-10-16T00:00:00Z",
+     "outcomes": "[\"Yes\",\"No\"]",
+     "outcomePrices": "[\"0.3600\",\"0.9300\"]",
+     "closed": false,
+     "status": "MARKET_STATUS_OPEN",
+     "marketSides": [
+      {
+       "long": true,
+       "description": "Yes",
+       "team": {
+        "name": "FlyQuest"
+       }
+      },
+      {
+       "long": false,
+       "description": "No",
+       "team": {
+        "name": "FlyQuest"
+       }
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

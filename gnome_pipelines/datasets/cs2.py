@@ -312,7 +312,7 @@ MATCH_PRIORS = TableSpec(
 
 
 # The cs2_upcoming pipeline's tables. Each run appends; the newest row per match is its state.
-# markets and learned are JSON lists. status is upcoming, live, or missing (gone from HLTV's
+# status is upcoming, live, or missing (gone from HLTV's
 # listing for MISSING_AFTER consecutive successful listings: postponed, cancelled or finished).
 UPCOMING_MATCHES = TableSpec(
     "cs2_upcoming_matches",
@@ -327,11 +327,11 @@ UPCOMING_MATCHES = TableSpec(
         pa.field("status", pa.string()),
         pa.field("missed_listings", pa.int64()),
         pa.field("features_at", pa.timestamp("us", tz="UTC")),
-        pa.field("series_slug", pa.string()),
-        pa.field("team_a_outcome", pa.int64()),
+        # JSON: the tradable legs on every venue, [{venue, market, listing_team_a, listing_team_b}].
         pa.field("markets", pa.string()),
-        pa.field("learned", pa.string()),
-        pa.field("alias_settled", pa.bool_()),
+        # JSON: per venue, the matched series market, team A's outcome, team A's instrument per
+        # market, and the aliases the match taught (with whether settlement has judged them).
+        pa.field("venues", pa.string()),
         pa.field("generated_at", pa.timestamp("us", tz="UTC"), nullable=False),
     ]),
     key=("match_id", "generated_at"),
@@ -366,6 +366,28 @@ UPCOMING_RUNS = TableSpec(
     partition_by=("generated_at", "day"),
 )
 
+# Every venue's top of book per tracked match and market each run, in team A's terms, registered
+# or not: what trading actually costs from T-12h to kickoff, which the backtest could only assume.
+UPCOMING_BOOKS = TableSpec(
+    "cs2_upcoming_books",
+    pa.schema([
+        pa.field("match_id", pa.int64(), nullable=False),
+        pa.field("venue", pa.string(), nullable=False),
+        pa.field("market", pa.string(), nullable=False),
+        pa.field("instrument", pa.string()),
+        pa.field("best_bid", pa.float64()),
+        pa.field("best_ask", pa.float64()),
+        pa.field("bid_size", pa.float64()),
+        pa.field("ask_size", pa.float64()),
+        pa.field("bid_size_5c", pa.float64()),
+        pa.field("ask_size_5c", pa.float64()),
+        pa.field("book_at", pa.timestamp("us", tz="UTC")),
+        pa.field("generated_at", pa.timestamp("us", tz="UTC"), nullable=False),
+    ]),
+    key=("match_id", "venue", "market", "generated_at"),
+    partition_by=("generated_at", "day"),
+)
+
 TEAM_ALIASES = TableSpec(
     "cs2_team_aliases",
     pa.schema([
@@ -381,4 +403,4 @@ TEAM_ALIASES = TableSpec(
 )
 
 ALL = (MATCH_HISTORY, PLAYER_MAP_STATS, MATCH_VETO, H2H_HISTORY, TEAM_RECENT_FORM, ROUND_FEATURES, TEAM_RANKINGS,
-       MATCH_PRIORS, UPCOMING_MATCHES, UPCOMING_FEATURES, UPCOMING_RUNS, TEAM_ALIASES)
+       MATCH_PRIORS, UPCOMING_MATCHES, UPCOMING_FEATURES, UPCOMING_RUNS, UPCOMING_BOOKS, TEAM_ALIASES)

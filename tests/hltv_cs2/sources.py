@@ -15,6 +15,7 @@ class FixtureSource:
 
     concurrency = 2
     can_be_blocked = True
+    billed = 0
 
     def __init__(self, pages: dict[int, str | None], listed: list[int] | None = None) -> None:
         self.pages = pages
@@ -28,5 +29,5 @@ class FixtureSource:
         match = re.search(r"/matches/(\d+)/", url)
         return self.pages.get(int(match.group(1))) if match else None
 
-    def stop(self) -> None:
+    async def close(self) -> None:
         pass

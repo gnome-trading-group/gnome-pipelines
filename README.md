@@ -11,7 +11,7 @@ through `gnomepy.data`; gnomepy-research holds the feature and model code these 
 | `gnome_pipelines/credentials.py` | `secret(name, env_var)`: the environment variable locally, else the `gnome/pipelines/<name>` secret |
 | `gnome_pipelines/hltv_cs2/` | The `hltv_cs2` pipeline: parsers (`scraper.py`), page sources (`fetch.py`: ZenRows, cache; `chrome.py`: local Chrome + demos), the collection loops (`collect.py`), page cache, demo parser, publishing |
 | `gnome_pipelines/cs2_prematch/` | `cs2_prematch_train`: the monthly pre-veto model refit |
-| `gnome_pipelines/cs2_upcoming/` | `cs2_upcoming`: every 15 min, upcoming BO3s from HLTV (kickoff, status, lineups, features) and their Polymarket listings, for gnome-launcher and the CS2 strategies |
+| `gnome_pipelines/cs2_upcoming/` | `cs2_upcoming`: every 15 min, upcoming BO3s from HLTV (kickoff, status, lineups, features), their listings and books on Polymarket International, Kalshi and Polymarket US, for gnome-launcher and the CS2 strategies |
 | `gnome_pipelines/cs2_round_model/` | Round win probability model training |
 | `gnome_pipelines/cfb/` | CFBD ingestion, quality checks, feature snapshots, team-week posteriors |
 | `gnome_pipelines/__init__.py` | `Pipeline[Params]`: what a pipeline declares (parameters, description, `Resources`, `Schedule`s) |
@@ -63,6 +63,7 @@ poetry run gnome-pipelines list
 poetry run gnome-pipelines describe hltv_cs2                              # its parameters
 poetry run gnome-pipelines run hltv_cs2 --stage dev -p days_back=3 -p min_stars=0
 poetry run gnome-pipelines run cs2_upcoming --stage prod --params '{"dry_run": true}'
+poetry run gnome-pipelines run cs2_upcoming --stage prod -p dry_run=true -p fetcher=chrome   # no ZenRows credits
 poetry run gnome-pipelines run cs2_prematch_train --stage local          # ~/.cache/gnome-pipelines/warehouse
 
 # HLTV through a visible Chrome window instead of ZenRows, with demos for the round features

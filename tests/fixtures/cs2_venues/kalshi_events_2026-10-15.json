@@ -1,0 +1,73 @@
+{
+ "events": [
+  {
+   "event_ticker": "KXCS2GAME-26OCT152000OFFFLY",
+   "series_ticker": "KXCS2GAME",
+   "title": "Off Chops vs. FlyQuest",
+   "markets": [
+    {
+     "ticker": "KXCS2GAME-26OCT152000OFFFLY-OFF",
+     "yes_sub_title": "Off Chops",
+     "no_sub_title": "Off Chops",
+     "status": "active",
+     "result": "",
+     "occurrence_datetime": "2026-10-16T04:00:00Z"
+    },
+    {
+     "ticker": "KXCS2GAME-26OCT152000OFFFLY-FLY",
+     "yes_sub_title": "FlyQuest",
+     "no_sub_title": "FlyQuest",
+     "status": "active",
+     "result": "",
+     "occurrence_datetime": "2026-10-16T04:00:00Z"
+    }
+   ]
+  },
+  {
+   "event_ticker": "KXCS2MAP-26OCT152000OFFFLY-1",
+   "series_ticker": "KXCS2MAP",
+   "title": "Off Chops vs. FlyQuest: Map 1",
+   "markets": [
+    {
+     "ticker": "KXCS2MAP-26OCT152000OFFFLY-1-OFF",
+     "yes_sub_title": "Off Chops",
+     "no_sub_title": "Off Chops",
+     "status": "active",
+     "result": "",
+     "occurrence_datetime": "2026-10-16T03:00:00Z"
+    },
+    {
+     "ticker": "KXCS2MAP-26OCT152000OFFFLY-1-FLY",
+     "yes_sub_title": "FlyQuest",
+     "no_sub_title": "FlyQuest",
+     "status": "active",
+     "result": "",
+     "occurrence_datetime": "2026-10-16T03:00:00Z"
+    }
+   ]
+  },
+  {
+   "event_ticker": "KXCS2MAP-26OCT152000OFFFLY-2",
+   "series_ticker": "KXCS2MAP",
+   "title": "Off Chops vs. FlyQuest: Map 2",
+   "markets": [
+    {
+     "ticker": "KXCS2MAP-26OCT152000OFFFLY-2-OFF",
+     "yes_sub_title": "Off Chops",
+     "no_sub_title": "Off Chops",
+     "status": "active",
+     "result": "",
+     "occurrence_datetime": "2026-10-16T03:00:00Z"
+    },
+    {
+     "ticker": "KXCS2MAP-26OCT152000OFFFLY-2-FLY",
+     "yes_sub_title": "FlyQuest",
+     "no_sub_title": "FlyQuest",
+     "status": "active",
+     "result": "",
+     "occurrence_datetime": "2026-10-16T03:00:00Z"
+    }
+   ]
+  }
+ ]
+}

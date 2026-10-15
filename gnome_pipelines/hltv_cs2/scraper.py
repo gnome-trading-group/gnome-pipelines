@@ -847,29 +847,6 @@ def parse_upcoming_match_html(soup: BeautifulSoup, match_id: int, stars: int = 0
     }
 
 
-def scrape_upcoming_matches(session: _Session, hours_ahead: float, bo_types: tuple[int, ...] = (3,)) -> list[dict]:
-    """Upcoming matches with known teams kicking off within hours_ahead, pages parsed."""
-    html = _get_html(session, f"{_BASE_URL}/matches")
-    if html is None:
-        logger.warning("could not fetch the upcoming matches listing")
-        return []
-    now = datetime.datetime.now(datetime.timezone.utc)
-    horizon = now + datetime.timedelta(hours=hours_ahead)
-    wanted = [
-        m for m in parse_upcoming_listing_html(html)
-        if m["match_time"] and now < m["match_time"] <= horizon and m["bo_type"] in bo_types
-        and m["team_a_name"] and m["team_b_name"] and not m["is_live"]
-    ]
-    out = []
-    for m in wanted:
-        page = _get_html(session, _match_url(m["match_id"]))
-        parsed = parse_upcoming_match_html(BeautifulSoup(page, "lxml"), m["match_id"], m["stars"]) if page else None
-        if parsed is not None:
-            out.append(parsed)
-    logger.info("%d upcoming matches within %.0fh, %d parsed", len(wanted), hours_ahead, len(out))
-    return out
-
-
 # ---------------------------------------------------------------------------
 # Weekly team rankings
 # ---------------------------------------------------------------------------

@@ -7,21 +7,29 @@ Every 15 min: HLTV's view of the BO3s about to start, for gnome-launcher and the
    for what only the page has: announced lineups, head-to-head, ranks. Features are built
    with build_priors_for, the code that built the training data, and appended to
    cs2_upcoming_features, which the strategies price from as of each event.
-3. Each match's Polymarket markets, resolved once by HLTV team id + kickoff (identity.py) and
-   then fixed, so the launcher's trigger for the match never changes.
-4. cs2_upcoming_matches gets a row per tracked match per run; the newest is its state.
+3. Each match's markets on every venue (venues.py: Polymarket, Kalshi, Polymarket US), matched
+   by HLTV team id + kickoff (identity.py, with aliases kept per venue). A venue's legs are
+   fixed once its series market is registered, so they never change under a running session.
+4. The top of book of each upcoming match's series and map-1 market on every venue, every run,
+   whether or not the market is registered: the spreads and depth the strategies would really
+   trade against.
+5. cs2_upcoming_matches gets a row per tracked match per run; the newest is its state.
 
-HLTV is the only source of match facts. Polymarket is read only to find the markets.
+HLTV is the only source of match facts. The venues are read only to find markets and books.
 Every page costs ZenRows credits, so a day's spend is capped: past daily_credit_budget,
-every match falls back to the slowest refetch interval.
+every match falls back to the slowest refetch interval. Locally, fetcher=chrome reads HLTV
+through a visible Chrome window instead, at no cost.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-from concurrent.futures import ThreadPoolExecutor
+import time
+from typing import Literal
 
 import pandas as pd
+import requests
 from bs4 import BeautifulSoup
 from gnomepy.data import DatasetStore, TableSpec
 from gnomepy.registry import RegistryClient
@@ -30,15 +38,18 @@ from pyiceberg.exceptions import NoSuchTableError
 from pyiceberg.expressions import GreaterThanOrEqual
 
 from gnome_pipelines import Pipeline, PipelineParams, PipelineResult, Resources, Schedule, register_pipeline
+from gnome_pipelines.cs2_upcoming.venues import VENUES, Ladder, Venue
 from gnome_pipelines.datasets import cs2
+from gnome_pipelines.environment import environment
+from gnome_pipelines.hltv_cs2.chrome import ChromeSource
+from gnome_pipelines.hltv_cs2.fetch import PageSource, ZenRowsSource, run_with_source
 from gnome_pipelines.hltv_cs2.publish import publish
 from gnome_pipelines.hltv_cs2.scraper import (
-    CREDITS_PER_PAGE, _BASE_URL, _get_html, _make_session, _match_url, parse_upcoming_listing_html,
-    parse_upcoming_match_html,
+    CREDITS_PER_PAGE, _BASE_URL, _match_url, parse_upcoming_listing_html, parse_upcoming_match_html,
 )
 from gnome_pipelines.stores import dataset_store
 from gnomepy_research.models.cs2.hltv.build_priors import build_priors_for
-from gnomepy_research.models.cs2.prematch import identity, polymarket
+from gnomepy_research.models.cs2.prematch import identity
 
 logger = logging.getLogger(__name__)
 
@@ -48,8 +59,8 @@ ACTIVE = (UPCOMING, LIVE)
 MISSING_AFTER = 2
 # Runs land a little early or late; without slack a 15 min interval polled every 15 min skips every other run.
 SLACK = pd.Timedelta(minutes=3)
-MARKET_LOOKBACK = pd.Timedelta(days=21)
-PAGE_CONCURRENCY = 5
+# Shares within this many dollars of the touch: what a taker order a few cents deep could fill.
+DEPTH_WINDOW = 0.05
 
 MATCH_COLUMNS = cs2.UPCOMING_MATCHES.schema.names
 
@@ -64,6 +75,9 @@ class CS2UpcomingParams(PipelineParams):
         "ZenRows credits this pipeline may spend per UTC day; past it, every match uses the slowest interval"))
     lookback_days: int = Field(3, gt=0, description="how far back to read state, for matches still settling aliases")
     dry_run: bool = Field(False, description="fetch and compute everything, publish nothing")
+    fetcher: Literal["zenrows", "chrome"] = Field("zenrows", description=(
+        "zenrows (anywhere, costs credits) or chrome (a visible local window, free; "
+        "click through Cloudflare when asked)"))
 
     @field_validator("refetch_bands")
     @classmethod
@@ -97,8 +111,7 @@ def new_row(listed: dict) -> dict:
     return {"match_id": int(listed["match_id"]), "team_a_id": None, "team_b_id": None,
             "team_a_name": listed["team_a_name"], "team_b_name": listed["team_b_name"],
             "kickoff": listed["match_time"], "stars": listed["stars"], "status": UPCOMING, "missed_listings": 0,
-            "features_at": pd.NaT, "series_slug": None, "team_a_outcome": None, "markets": "[]", "learned": "[]",
-            "alias_settled": False}
+            "features_at": pd.NaT, "markets": "[]", "venues": "{}"}
 
 
 def track(prev: dict[int, dict], listing: list[dict], now: pd.Timestamp,
@@ -132,62 +145,98 @@ def track(prev: dict[int, dict], listing: list[dict], now: pd.Timestamp,
     return out
 
 
-def _orientation(market_row, team_a_name_norm: str) -> int | None:
-    if market_row.o0 == team_a_name_norm:
-        return 0
-    if market_row.o1 == team_a_name_norm:
-        return 1
-    return None
-
-
-def resolve_legs(match: dict, pm: pd.DataFrame, aliases: pd.DataFrame,
-                 resolve) -> tuple[identity.Resolution, list[dict], str | None]:
+def team_a_markets(r: identity.Resolution, frame: pd.DataFrame) -> list[dict]:
     """
-    (series resolution, legs, reason if no legs). Map 1's market may list its outcomes in
-    a different order from the series market, so each market is oriented by the
-    name team A has in the series market, never by position.
+    Team A's instrument, and both teams' registry ids, for the matched series market and the
+    same meeting's map 1. Map 1's market may list its outcomes in a different order from the
+    series market, so each market is oriented by the name team A has in the series market,
+    never by position.
     """
-    r = identity.resolve_match(match, pm, aliases)
-    if r.market_slug is None:
-        return r, [], r.reason
-    by_slug = pm.set_index("market_slug")
-    series = by_slug.loc[r.market_slug]
+    series = frame[frame.market_slug == r.market_slug].iloc[0]
     a_name = series.o0 if r.team_a_outcome == 0 else series.o1
-    legs = []
-    for market, slug in (("series", r.market_slug), ("game1", identity.sibling_market(pm, r.market_slug, "game1"))):
-        if slug is None:
-            continue
-        mk = by_slug.loc[slug]
-        side = _orientation(mk, a_name)
+    meeting = frame[frame.meeting == series.meeting].drop_duplicates("market")
+    out = []
+    for mk in sorted(meeting.itertuples(), key=lambda m: m.market != "series"):
+        side = 0 if mk.o0 == a_name else 1 if mk.o1 == a_name else None
         if side is None:
             continue
-        tok_a, tok_b = (mk.tokens[0], mk.tokens[1]) if side == 0 else (mk.tokens[1], mk.tokens[0])
-        listing_a, listing_b = resolve(mk.condition_id, str(tok_a)), resolve(mk.condition_id, str(tok_b))
+        out.append({"market": mk.market, "instrument": mk.instruments[side],
+                    "esid_a": mk.esids[side], "esid_b": mk.esids[1 - side]})
+    return out
+
+
+def match_venue(match: dict, frame: pd.DataFrame, aliases: pd.DataFrame,
+                venue: str) -> tuple[identity.Resolution, dict | None]:
+    """The match's resolution on one venue, and its state there if a series market was found."""
+    r = identity.resolve_match(match, frame, aliases, source=venue)
+    if r.market_slug is None:
+        return r, None
+    return r, {"series": r.market_slug, "team_a_outcome": r.team_a_outcome, "markets": team_a_markets(r, frame),
+               "learned": [list(x) for x in r.learned], "alias_settled": False}
+
+
+def venue_legs(venue: str, state: dict, listing) -> list[dict]:
+    """A venue's tradable legs: each market with both outcomes registered, and none unless the series is."""
+    legs = []
+    for m in state["markets"]:
+        listing_a, listing_b = listing(m["esid_a"]), listing(m["esid_b"])
         if listing_a is not None and listing_b is not None:
-            legs.append({"market": market, "listing_team_a": int(listing_a), "listing_team_b": int(listing_b)})
-    if not any(leg["market"] == "series" for leg in legs):
-        return r, [], "series market not in registry"
-    return r, legs, None
+            legs.append({"venue": venue, "market": m["market"],
+                         "listing_team_a": int(listing_a), "listing_team_b": int(listing_b)})
+    return legs if any(leg["market"] == "series" for leg in legs) else []
 
 
-def settle_aliases(rows: dict[int, dict], pm: pd.DataFrame, series_won: pd.Series,
-                   aliases: pd.DataFrame) -> tuple[list[int], pd.DataFrame]:
-    """Fold settled series markets into the aliases each match taught us; returns the matches settled."""
-    by_slug = pm.set_index("market_slug")
-    settled = []
-    for match_id, r in rows.items():
-        learned = json.loads(r["learned"])
-        if r["alias_settled"] or not learned or r["series_slug"] not in by_slug.index or match_id not in series_won.index:
+def book_row(match_id: int, venue: str, market: str, instrument: str, ladder: Ladder) -> dict:
+    """One market's top of book in team A's terms, plus the shares within DEPTH_WINDOW of each touch."""
+    bids, asks, book_at = ladder
+    best_bid, best_ask = (max(bids) if bids else None), (min(asks) if asks else None)
+    return {
+        "match_id": match_id, "venue": venue, "market": market, "instrument": instrument,
+        "best_bid": best_bid, "best_ask": best_ask,
+        "bid_size": bids.get(best_bid), "ask_size": asks.get(best_ask),
+        "bid_size_5c": sum(v for k, v in bids.items() if k >= best_bid - DEPTH_WINDOW - 1e-9) if bids else 0.0,
+        "ask_size_5c": sum(v for k, v in asks.items() if k <= best_ask + DEPTH_WINDOW + 1e-9) if asks else 0.0,
+        "book_at": book_at,
+    }
+
+
+def awaiting_settlement(rows: dict[int, dict], venue: str, series_won: pd.Series) -> dict[int, dict]:
+    """Rows whose aliases learned on this venue a finished match can now judge."""
+    out = {}
+    for mid, row in rows.items():
+        state = json.loads(row["venues"]).get(venue)
+        if state and state["learned"] and not state["alias_settled"] and mid in series_won.index:
+            out[mid] = state
+    return out
+
+
+def settle_aliases(rows: dict[int, dict], venue: str, finals: dict[str, list[float]], series_won: pd.Series,
+                   aliases: pd.DataFrame) -> tuple[dict[int, dict], pd.DataFrame]:
+    """Fold a venue's settled series markets into the aliases its matches taught; returns the rows that changed."""
+    changed = {}
+    for mid, state in awaiting_settlement(rows, venue, series_won).items():
+        final = finals.get(state["series"])
+        if not final:
             continue
-        mk = by_slug.loc[r["series_slug"]]
-        final = [float(x) for x in mk.final] if len(mk.final) == 2 else []
-        if not final or max(final) < 0.9:
-            continue
-        agrees = int(final[int(r["team_a_outcome"])] > 0.5) == int(series_won[match_id])
-        for name, team_id in learned:
-            aliases = identity.settle(aliases, "polymarket", name, int(team_id), agrees)
-        settled.append(match_id)
-    return settled, aliases
+        agrees = int(final[int(state["team_a_outcome"])] > 0.5) == int(series_won[mid])
+        for name, team_id in state["learned"]:
+            aliases = identity.settle(aliases, venue, name, int(team_id), agrees)
+        venues = json.loads(rows[mid]["venues"])
+        venues[venue] = {**state, "alias_settled": True}
+        changed[mid] = {**rows[mid], "venues": json.dumps(venues)}
+    return changed, aliases
+
+
+def _listing_id(registry: RegistryClient, exchange_id: int, esid: str, retries: int = 3) -> int | None:
+    for attempt in range(retries):
+        try:
+            hits = registry.get_listing(exchange_id=exchange_id, exchange_security_id=esid)
+            return int(hits[0].listing_id) if hits else None
+        except requests.exceptions.RequestException:
+            if attempt == retries - 1:
+                raise
+            time.sleep(1 + attempt)
+    return None
 
 
 def feature_rows(parsed: list[dict], ds: DatasetStore) -> pd.DataFrame:
@@ -205,6 +254,54 @@ def feature_rows(parsed: list[dict], ds: DatasetStore) -> pd.DataFrame:
         return priors
     lineups = targets.set_index("match_id")[["team_a_lineup_ids", "team_b_lineup_ids"]]
     return priors.join(lineups, on="match_id")
+
+
+async def fetch_due(source: PageSource, prev: dict[int, dict], now: pd.Timestamp,
+                    params: CS2UpcomingParams, over_budget: bool) -> tuple[dict[int, dict], dict[int, str | None]] | None:
+    """
+    This run's tracked matches and the pages of those due a refetch (None where a fetch
+    failed), or None if the listing couldn't be fetched.
+    """
+    html = await source.html(f"{_BASE_URL}/matches")
+    if html is None:
+        return None
+    rows = track(prev, parse_upcoming_listing_html(html), now, pd.Timedelta(hours=params.window_hours))
+    due = [mid for mid, r in rows.items() if page_due(r, now, params.refetch_bands, over_budget)]
+    pages: dict[int, str | None] = {}
+    for start in range(0, len(due), source.concurrency):
+        batch = due[start:start + source.concurrency]
+        pages.update(zip(batch, await asyncio.gather(*(source.html(_match_url(mid)) for mid in batch))))
+    return rows, pages
+
+
+def _aliases(ds: DatasetStore) -> pd.DataFrame:
+    try:
+        return ds.load(cs2.TEAM_ALIASES.name)
+    except NoSuchTableError:
+        return identity.empty_aliases()
+
+
+def _match_on(venue: str, row: dict, frame: pd.DataFrame, aliases: pd.DataFrame, listing,
+              now: pd.Timestamp) -> tuple[pd.DataFrame, str | None]:
+    """
+    Match one row to one venue and look up its legs, updating the row in place. A venue's
+    match is kept once found, so later runs only retry the registry. Returns the aliases and
+    why the row has no legs on the venue, if it hasn't.
+    """
+    venues = json.loads(row["venues"])
+    state = venues.get(venue)
+    if state is None:
+        resolution, state = match_venue({**row, "match_time": row["kickoff"]}, frame, aliases, venue)
+        aliases = identity.learn(aliases, resolution.learned, now, source=venue)
+        if state is None:
+            return aliases, resolution.reason
+        venues[venue] = state
+        row["venues"] = json.dumps(venues)
+    legs = venue_legs(venue, state, listing)
+    if not legs:
+        return aliases, "series market not in registry"
+    row["markets"] = json.dumps(json.loads(row["markets"]) + legs)
+    return aliases, None
 
 
 def _series_won(history: pd.DataFrame) -> pd.Series:
@@ -230,11 +327,14 @@ def latest_state(rows: pd.DataFrame) -> dict[int, dict]:
 @register_pipeline
 class CS2UpcomingPipeline(Pipeline[CS2UpcomingParams]):
     name = "cs2_upcoming"
-    description = "Track upcoming CS2 BO3s on HLTV: kickoff, status, lineups and features, and their Polymarket markets"
-    resources = Resources(cpu=2048, memory=8192)
+    description = "Track upcoming CS2 BO3s on HLTV: kickoff, status, lineups and features; their markets and books on every venue"
+    # Measured 2026-10-15: 1.1 GB peak, single-threaded; the spare memory is for history growth and busy days.
+    resources = Resources(cpu=1024, memory=3072)
     schedules = (Schedule("quarter_hourly", "rate(15 minutes)", {}, "every 15 minutes"),)
 
     def run(self, params: CS2UpcomingParams) -> PipelineResult:
+        if params.fetcher == "chrome" and environment().in_task:
+            raise ValueError("fetcher=chrome needs a screen for the Cloudflare challenge; run it locally")
         now = pd.Timestamp.now(tz="UTC").floor("s")
         ds = dataset_store()
         prev = latest_state(_load_since(ds, cs2.UPCOMING_MATCHES, now - pd.Timedelta(days=params.lookback_days)))
@@ -245,20 +345,17 @@ class CS2UpcomingPipeline(Pipeline[CS2UpcomingParams]):
             logger.warning("%d credits spent today, budget %d: slowest refetch interval for every match",
                            spent, params.daily_credit_budget)
 
-        session = _make_session()
-        html = _get_html(session, f"{_BASE_URL}/matches")
-        if html is None:
+        source = {"zenrows": ZenRowsSource, "chrome": ChromeSource}[params.fetcher]()
+        fetched = run_with_source(source, lambda s: fetch_due(s, prev, now, params, over_budget))
+        credits = source.billed * CREDITS_PER_PAGE
+        if fetched is None:
             logger.warning("could not fetch the HLTV listing; no match changes state this run")
-            self._publish_run(params, now, False, 0, session.billed, over_budget, len(prev))
-            return PipelineResult(status="succeeded", outputs={"listing_ok": False, "credits": session.billed * CREDITS_PER_PAGE})
+            self._publish_run(params, now, False, 0, credits, over_budget, len(prev))
+            return PipelineResult(status="succeeded", outputs={"listing_ok": False, "credits": credits})
 
-        rows = track(prev, parse_upcoming_listing_html(html), now, pd.Timedelta(hours=params.window_hours))
-        due = [mid for mid, r in rows.items() if page_due(r, now, params.refetch_bands, over_budget)]
-        pages_before = session.billed
-        with ThreadPoolExecutor(PAGE_CONCURRENCY) as pool:
-            pages = list(pool.map(lambda mid: _get_html(session, _match_url(mid)), due))
+        rows, pages = fetched
         parsed = []
-        for mid, page in zip(due, pages):
+        for mid, page in pages.items():
             p = parse_upcoming_match_html(BeautifulSoup(page, "lxml"), mid, rows[mid]["stars"]) if page else None
             if p is None:
                 logger.warning("match %d: page not fetched or teams not known yet", mid)
@@ -270,71 +367,107 @@ class CS2UpcomingPipeline(Pipeline[CS2UpcomingParams]):
         for mid in (features.match_id.astype(int).tolist() if len(features) else []):
             rows[mid]["features_at"] = now
 
-        aliases, skipped, settled = self._markets(ds, rows, prev, now)
+        venues = [v() for v in VENUES]
+        summary = {v.name: {"matched": 0, "tradable": 0, "skipped": {}, "books": 0} for v in venues}
+        aliases, settled = self._markets(ds, venues, rows, prev, now, summary)
+        books = self._books(venues, rows, summary)
+        for v in venues:
+            states = [json.loads(r["venues"]).get(v.name) for r in rows.values()]
+            summary[v.name]["matched"] = sum(s is not None for s in states)
+            summary[v.name]["tradable"] = sum(any(leg["venue"] == v.name for leg in json.loads(r["markets"]))
+                                              for r in rows.values())
 
-        changed = dict(rows)
-        for mid in settled:
-            changed[mid] = {**(rows.get(mid) or prev[mid]), "alias_settled": True}
+        changed = {**rows, **settled}
         if not params.dry_run:
             if len(features):
                 publish(cs2.UPCOMING_FEATURES, features.assign(generated_at=now))
             if changed:
                 publish(cs2.UPCOMING_MATCHES, pd.DataFrame(
                     [{**r, "generated_at": now} for r in changed.values()])[MATCH_COLUMNS])
+            if len(books):
+                publish(cs2.UPCOMING_BOOKS, books.assign(generated_at=now))
             if aliases is not None:
                 publish(cs2.TEAM_ALIASES, aliases)
-        self._publish_run(params, now, True, session.billed - pages_before, session.billed, over_budget, len(rows))
+        self._publish_run(params, now, True, sum(p is not None for p in pages.values()), credits, over_budget, len(rows))
 
         statuses = pd.Series([r["status"] for r in rows.values()]).value_counts().to_dict() if rows else {}
         return PipelineResult(status="succeeded", outputs={
-            "listing_ok": True, "tracked": statuses, "pages_due": len(due), "features": len(features),
-            "with_markets": sum(r["markets"] != "[]" for r in rows.values()), "skipped": skipped,
-            "aliases_settled": len(settled), "credits": session.billed * CREDITS_PER_PAGE,
-            "credits_today": spent + session.billed * CREDITS_PER_PAGE, "over_budget": over_budget,
+            "listing_ok": True, "tracked": statuses, "pages_due": len(pages), "features": len(features),
+            "with_markets": sum(r["markets"] != "[]" for r in rows.values()), "venues": summary,
+            "books": len(books), "aliases_settled": len(settled), "credits": credits,
+            "credits_today": spent + credits, "over_budget": over_budget,
             "dry_run": params.dry_run,
         })
 
     @staticmethod
-    def _markets(ds: DatasetStore, rows: dict[int, dict], prev: dict[int, dict],
-                 now: pd.Timestamp) -> tuple[pd.DataFrame | None, dict[str, int], list[int]]:
-        """Resolve markets for upcoming matches that have none, then settle aliases. Aliases are None if untouched."""
-        unresolved = [r for r in rows.values()
-                      if r["status"] == UPCOMING and r["markets"] == "[]" and not pd.isna(r["team_a_id"])]
-        unsettled = {mid: r for mid, r in {**prev, **rows}.items()
-                     if not r["alias_settled"] and r["learned"] != "[]"}
-        if not unresolved and not unsettled:
-            return None, {}, []
-
-        naive = now.tz_localize(None)
-        pm = polymarket.fetch_markets(naive - MARKET_LOOKBACK, naive + pd.Timedelta(days=2))
-        try:
-            aliases = ds.load(cs2.TEAM_ALIASES.name)
-        except NoSuchTableError:
-            aliases = identity.empty_aliases()
-
+    def _markets(ds: DatasetStore, venues: list[Venue], rows: dict[int, dict], prev: dict[int, dict],
+                 now: pd.Timestamp, summary: dict[str, dict]) -> tuple[pd.DataFrame | None, dict[int, dict]]:
+        """
+        Match each upcoming match to every venue it isn't tradable on yet, then settle the aliases
+        finished matches taught. A venue that fails is skipped for this run, the others carry on.
+        Returns the aliases (None if untouched) and the rows settlement changed.
+        """
         registry = RegistryClient()
-        skipped: dict[str, int] = {}
-        for r in unresolved:
-            match = {**r, "match_time": r["kickoff"]}
-            resolution, legs, reason = resolve_legs(
-                match, pm, aliases, lambda cond, tok: polymarket.resolve_listing(cond, tok, registry))
-            aliases = identity.learn(aliases, resolution.learned, now)
-            if reason:
-                skipped[reason] = skipped.get(reason, 0) + 1
-                continue
-            r.update(series_slug=resolution.market_slug, team_a_outcome=resolution.team_a_outcome,
-                     markets=json.dumps(legs), learned=json.dumps([list(x) for x in resolution.learned]))
+        exchange_ids = {e.exchange_name: int(e.exchange_id) for e in registry.get_exchange()}
+        aliases: pd.DataFrame | None = None
+        settled: dict[int, dict] = {}
+        series_won: pd.Series | None = None
+        for venue in venues:
+            stats = summary[venue.name]
+            try:
+                pending = [r for r in rows.values() if r["status"] == UPCOMING and not pd.isna(r["team_a_id"])
+                           and not any(leg["venue"] == venue.name for leg in json.loads(r["markets"]))]
+                if pending:
+                    frame = venue.markets(now)
+                    aliases = aliases if aliases is not None else _aliases(ds)
+                    exchange_id = exchange_ids[venue.exchange_name]
+                    listing = lambda esid: _listing_id(registry, exchange_id, esid)
+                    for r in pending:
+                        aliases, reason = _match_on(venue.name, r, frame, aliases, listing, now)
+                        if reason:
+                            stats["skipped"][reason] = stats["skipped"].get(reason, 0) + 1
 
-        settled: list[int] = []
-        if unsettled:
-            settled, aliases = settle_aliases(unsettled, pm, _series_won(ds.load(cs2.MATCH_HISTORY.name)), aliases)
-        return aliases, skipped, settled
+                current = {**prev, **rows, **settled}
+                if any(json.loads(r["venues"]).get(venue.name, {}).get("learned") for r in current.values()):
+                    series_won = series_won if series_won is not None else _series_won(ds.load(cs2.MATCH_HISTORY.name))
+                    waiting = awaiting_settlement(current, venue.name, series_won)
+                    if waiting:
+                        aliases = aliases if aliases is not None else _aliases(ds)
+                        finals = venue.finals(sorted({s["series"] for s in waiting.values()}))
+                        changed, aliases = settle_aliases(current, venue.name, finals, series_won, aliases)
+                        settled.update(changed)
+                        rows.update({mid: r for mid, r in changed.items() if mid in rows})
+            except Exception as exc:
+                logger.exception("%s: markets skipped this run", venue.name)
+                stats["error"] = str(exc)
+        return aliases, settled
 
     @staticmethod
-    def _publish_run(params: CS2UpcomingParams, now: pd.Timestamp, listing_ok: bool, pages: int, billed: int,
+    def _books(venues: list[Venue], rows: dict[int, dict], summary: dict[str, dict]) -> pd.DataFrame:
+        """This run's books of every upcoming match's known markets, on each venue that answers."""
+        out = []
+        for venue in venues:
+            wanted = {m["instrument"]: (mid, m["market"]) for mid, r in rows.items() if r["status"] == UPCOMING
+                      for m in json.loads(r["venues"]).get(venue.name, {}).get("markets", [])}
+            if not wanted:
+                continue
+            try:
+                ladders = venue.books(list(wanted))
+            except Exception as exc:
+                logger.exception("%s: books skipped this run", venue.name)
+                summary[venue.name]["error"] = str(exc)
+                continue
+            got = [book_row(mid, venue.name, market, inst, ladders[inst])
+                   for inst, (mid, market) in wanted.items() if inst in ladders]
+            summary[venue.name]["books"] = len(got)
+            out += got
+        return pd.DataFrame(out)
+
+    @staticmethod
+    def _publish_run(params: CS2UpcomingParams, now: pd.Timestamp, listing_ok: bool, pages: int, credits: int,
                      over_budget: bool, tracked: int) -> None:
         if params.dry_run:
             return
         publish(cs2.UPCOMING_RUNS, [{"generated_at": now, "listing_ok": listing_ok, "pages_fetched": pages,
-                                     "credits": billed * CREDITS_PER_PAGE, "over_budget": over_budget,
+                                     "credits": credits, "over_budget": over_budget,
                                      "tracked": tracked}])

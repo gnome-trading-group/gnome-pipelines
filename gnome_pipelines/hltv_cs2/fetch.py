@@ -34,10 +34,12 @@ class PageSource(Protocol):
     concurrency: int
     # Whether a run of misses means HLTV is refusing us, rather than pages simply not being there.
     can_be_blocked: bool
+    # Pages a paid service has charged for so far.
+    billed: int
 
     async def html(self, url: str, *, wait_selector: str | None = None, wait_count: int = 1) -> str | None: ...
 
-    def stop(self) -> None: ...
+    async def close(self) -> None: ...
 
 
 class ZenRowsSource:
@@ -49,12 +51,16 @@ class ZenRowsSource:
     def __init__(self) -> None:
         self._session: _Session | None = None
 
+    @property
+    def billed(self) -> int:
+        return self._session.billed if self._session is not None else 0
+
     async def html(self, url: str, *, wait_selector: str | None = None, wait_count: int = 1) -> str | None:
         if self._session is None:
             self._session = _make_session()
         return await asyncio.to_thread(_get_html, self._session, url)
 
-    def stop(self) -> None:
+    async def close(self) -> None:
         pass
 
 
@@ -63,11 +69,12 @@ class CacheSource:
 
     concurrency = 32
     can_be_blocked = False
+    billed = 0
 
     async def html(self, url: str, *, wait_selector: str | None = None, wait_count: int = 1) -> str | None:
         return None
 
-    def stop(self) -> None:
+    async def close(self) -> None:
         pass
 
 
@@ -99,22 +106,16 @@ class HltvFetcher:
         return html, fetched_at
 
 
-def run_with_fetcher[T](source: PageSource, policy: CachePolicy, work: Callable[[HltvFetcher], Awaitable[T]]) -> T:
+def run_with_source[T](source: PageSource, work: Callable[[PageSource], Awaitable[T]]) -> T:
     """
-    Run work(fetcher) to completion, then stop the source and push any pages still only local.
+    Run work(source) to completion on a new event loop, then close the source on that loop.
 
     On Ctrl+C the work is cancelled rather than abandoned, so its finally blocks (which publish
     what was collected) still run before the interrupt is re-raised.
     """
-    cache = HtmlCache(policy=policy)
-    try:
-        cache.warm_index()
-    except Exception as exc:
-        logger.warning("could not warm the remote cache index (%s) — falling back to per-key lookups", exc)
-    fetcher = HltvFetcher(cache, source)
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    task = loop.create_task(work(fetcher))
+    task = loop.create_task(work(source))
     try:
         return loop.run_until_complete(task)
     except KeyboardInterrupt:
@@ -126,6 +127,20 @@ def run_with_fetcher[T](source: PageSource, policy: CachePolicy, work: Callable[
             pass
         raise
     finally:
-        source.stop()
-        cache.sync_pending()
+        # On the loop, not after it: closing a source can need the loop (Chrome's websockets).
+        loop.run_until_complete(source.close())
         loop.close()
+
+
+def run_with_fetcher[T](source: PageSource, policy: CachePolicy, work: Callable[[HltvFetcher], Awaitable[T]]) -> T:
+    """run_with_source behind the page cache, then push any pages still only local."""
+    cache = HtmlCache(policy=policy)
+    try:
+        cache.warm_index()
+    except Exception as exc:
+        logger.warning("could not warm the remote cache index (%s) — falling back to per-key lookups", exc)
+    fetcher = HltvFetcher(cache, source)
+    try:
+        return run_with_source(source, lambda _: work(fetcher))
+    finally:
+        cache.sync_pending()
