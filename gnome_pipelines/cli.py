@@ -77,7 +77,7 @@ def run(pipeline: str, stage: str, param_pairs: tuple[str, ...], params_json: st
     if stage is Stage.PROD and not yes:
         click.confirm(f"Run {pipeline} against prod data?", abort=True)
 
-    os.environ.update(_run_environment(stage, warehouse))
+    os.environ.update(_run_environment(stage, warehouse), PIPELINE_NAME=pipeline)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     logging.info("Running %s against %s as %s (%s): %s", pipeline, stage.value, os.environ["RUN_ID"],
                  os.environ["GNOME_CODE_VERSION"], params)

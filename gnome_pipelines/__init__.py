@@ -5,10 +5,10 @@ and optionally train models. Each pipeline is a Python class registered via
 @register_pipeline and executed by runner.execute(), in an ECS Fargate task or
 through `gnome-pipelines run`.
 
-A pipeline declares its parameters as a PipelineParams model, Pipeline[ThatModel];
-execute() validates the raw parameters against it before the pipeline starts.
-Operational config (schedule, cpu/memory, parameter values) is stored in DynamoDB
-and managed through the web UI — not in code.
+Everything about a pipeline is declared in code, as an orchestrator like Dagster would have it:
+its parameters (a PipelineParams model, Pipeline[ThatModel], which execute() validates before the
+pipeline starts), its description, the task size it needs and its schedules. manifest.py publishes
+those declarations for the API and the scheduler; at runtime a schedule is only switched on or off.
 """
 from __future__ import annotations
 
@@ -31,9 +31,30 @@ class PipelineParams(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+@dataclass(frozen=True)
+class Resources:
+    """The Fargate task size: cpu in vCPU units (1024 = 1 vCPU), memory in MiB, a valid Fargate pair."""
+
+    cpu: int = 1024
+    memory: int = 4096
+
+
+@dataclass(frozen=True)
+class Schedule:
+    """A run on an EventBridge Scheduler expression (UTC), with its parameters. Starts switched off."""
+
+    name: str
+    expression: str
+    params: dict = field(default_factory=dict)
+    description: str = ""
+
+
 class Pipeline[P: PipelineParams]:
     name: ClassVar[str]
+    description: ClassVar[str]
     params_type: ClassVar[type[PipelineParams]]
+    resources: ClassVar[Resources] = Resources()
+    schedules: ClassVar[tuple[Schedule, ...]] = ()
 
     def __init_subclass__(cls, **kwargs) -> None:
         super().__init_subclass__(**kwargs)

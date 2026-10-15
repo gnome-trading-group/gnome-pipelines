@@ -15,9 +15,11 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 import boto3
+from botocore.exceptions import ClientError
 
 from gnome_pipelines import PIPELINE_REGISTRY, PipelineResult
 from gnome_pipelines.environment import environment
+from gnome_pipelines.stores import code_version
 from gnome_pipelines.cs2_prematch import CS2PrematchPredictPipeline, CS2PrematchTrainPipeline  # noqa: F401 — registers pipelines
 from gnome_pipelines.hltv_cs2 import HltvCs2Pipeline  # noqa: F401 — registers pipeline
 
@@ -32,15 +34,22 @@ def _storable(value: object) -> object:
     return json.loads(json.dumps(value, default=lambda v: v.item() if hasattr(v, "item") else str(v)), parse_float=Decimal)
 
 
-def _update_run(pipeline_name: str, run_id: str, **attrs: object) -> None:
+def _update_run(pipeline_name: str, run_id: str, expect: str, **attrs: object) -> bool:
+    """Move the run on from status `expect`; False if it has moved elsewhere (cancelled from the UI)."""
     table = boto3.resource("dynamodb").Table(os.environ["PIPELINES_TABLE"])
-    update_expr = "SET " + ", ".join(f"#{k} = :{k}" for k in attrs)
-    table.update_item(
-        Key={"pk": f"RUN#{pipeline_name}", "sk": run_id},
-        UpdateExpression=update_expr,
-        ExpressionAttributeNames={f"#{k}": k for k in attrs},
-        ExpressionAttributeValues={f":{k}": v for k, v in attrs.items()},
-    )
+    try:
+        table.update_item(
+            Key={"pk": f"RUN#{pipeline_name}", "sk": run_id},
+            UpdateExpression="SET " + ", ".join(f"#{k} = :{k}" for k in attrs),
+            ConditionExpression="#status = :expect",
+            ExpressionAttributeNames={"#status": "status", **{f"#{k}": k for k in attrs}},
+            ExpressionAttributeValues={":expect": expect, **{f":{k}": v for k, v in attrs.items()}},
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        return False
+    return True
 
 
 def execute(pipeline_name: str, params: dict) -> PipelineResult:
@@ -59,14 +68,16 @@ def main() -> None:
 
     logger.info("Starting pipeline=%s run_id=%s stage=%s params=%s", pipeline_name, run_id, environment().stage.value, params)
 
-    _update_run(pipeline_name, run_id, status="RUNNING", started_at=_now())
+    if not _update_run(pipeline_name, run_id, "PENDING", status="RUNNING", started_at=_now(), code_version=code_version()):
+        logger.info("Run %s was cancelled before it started", run_id)
+        return
     try:
         result = execute(pipeline_name, params)
-        _update_run(pipeline_name, run_id, status="SUCCEEDED", outputs=_storable(result.outputs), completed_at=_now())
+        _update_run(pipeline_name, run_id, "RUNNING", status="SUCCEEDED", outputs=_storable(result.outputs), completed_at=_now())
         logger.info("Pipeline %s succeeded: %s", pipeline_name, result.outputs)
     except Exception:
         logger.exception("Pipeline %s failed", pipeline_name)
-        _update_run(pipeline_name, run_id,
+        _update_run(pipeline_name, run_id, "RUNNING",
                     status="FAILED",
                     error_message=traceback.format_exc()[-2000:],
                     completed_at=_now())

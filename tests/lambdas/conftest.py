@@ -10,9 +10,10 @@ os.environ.update({
     "TASK_DEFINITION_ARN": "arn:task-definition",
     "SUBNET_IDS": "subnet-a,subnet-b",
     "SECURITY_GROUP_ID": "sg-1",
+    "TRIGGER_FUNCTION": "gnome-pipelines-trigger",
     "TRIGGER_FUNCTION_ARN": "arn:trigger",
     "SCHEDULER_ROLE_ARN": "arn:scheduler-role",
-    "SCHEDULE_GROUP": "gnome-pipelines",
+    "LOG_GROUP": "/gnome-pipelines/runs",
 })
 # The Lambda folder is uploaded as it is, so tests mustn't leave compiled files in it.
 sys.dont_write_bytecode = True

@@ -13,31 +13,54 @@ through `gnomepy.data`; gnomepy-research holds the feature and model code these 
 | `gnome_pipelines/cs2_prematch/` | `cs2_prematch_train` and `cs2_prematch_predict` pipelines |
 | `gnome_pipelines/cs2_round_model/` | Round win probability model training |
 | `gnome_pipelines/cfb/` | CFBD ingestion, quality checks, feature snapshots, team-week posteriors |
+| `gnome_pipelines/__init__.py` | `Pipeline[Params]`: what a pipeline declares (parameters, description, `Resources`, `Schedule`s) |
+| `gnome_pipelines/manifest.py` | Those declarations as JSON, published to SSM by CI for the API and the scheduler |
 | `gnome_pipelines/cli.py` | `gnome-pipelines run <pipeline> --stage local\|dev\|prod`: a registered pipeline on your machine |
 | `gnome_pipelines/environment.py` | `environment()`: the run's stage (`local`/`dev`/`prod`) and whether it's in a Fargate task |
 | `gnome_pipelines/runner.py` | Fargate entry point the trigger Lambda starts (`PIPELINE_NAME`, `RUN_ID`, `PIPELINE_PARAMS`); records the run's status |
 | `Dockerfile`, `.github/workflows/build-image.yml` | The `gnome-pipelines` image: every push to main goes to dev ECR, then to prod once approved on the `prod` GitHub environment |
-| `cdk/lib/stacks/data-stack.ts` | The S3 Tables bucket, its namespaces, the SSM parameters `gnomepy.data` finds it by, and the pipeline secrets |
-| `cdk/lib/stacks/run-stack.ts` | Running pipelines: ECR repo, Fargate cluster and task, the `gnome-pipelines` runs table, schedules, alarms |
-| `cdk/lambda/` | The pipelines API (list, create, get, update, trigger) and the task-stopped status handler |
+| `cdk/lib/stacks/data-stack.ts` | The S3 Tables bucket, its namespaces, the SSM parameters `gnomepy.data` finds it by, the pipeline secrets, and the data API |
+| `cdk/lib/stacks/run-stack.ts` | Running pipelines: ECR repo, Fargate cluster and task, the `gnome-pipelines` runs table, schedule group, Lambdas, alarms |
+| `cdk/lambda/` | The pipelines API (`api.py`), run trigger, schedule sync and the task-stopped status handler |
+| `cdk/data-api/` | The datasets and artifacts API: a container Lambda reading the Iceberg tables |
 
 ```
 poetry install
-poetry run pytest     # includes tests/lambdas for cdk/lambda
+poetry run pytest     # includes tests/lambdas (cdk/lambda) and tests/data_api (cdk/data-api)
 ```
 
-gnome-controller's Research → Pipelines pages call `/research/pipelines` on the controller API, which
-routes to the `gnome-pipelines-*` Lambdas by name. Everything else about running a pipeline lives here:
-a definition (parameters, cpu/memory, an optional EventBridge schedule in the `gnome-pipelines` schedule
-group) and its runs are items in the `gnome-pipelines` DynamoDB table; a run is one Fargate task, and a
-failed run is put on the `gnome-alerts` bus as `PIPELINE_FAILED`.
+## How pipelines run
+
+A pipeline is declared entirely in code, the way an orchestrator like Dagster would have it:
+
+```python
+@register_pipeline
+class HltvCs2Pipeline(Pipeline[HltvCs2Params]):
+    name = "hltv_cs2"
+    description = "HLTV matches, ... then the match priors rebuilt"
+    resources = Resources(cpu=2048, memory=8192)
+    schedules = (Schedule("weekly", "cron(0 6 ? * MON *)", {"days_back": 8, "min_stars": 0}),)
+```
+
+- **Publishing.** When CI pushes the image to an account, it publishes the declarations from that image as
+  one SSM parameter per pipeline under `/gnome/pipelines/types/` and invokes `gnome-pipelines-sync`, which
+  makes the EventBridge schedules (group `gnome-pipelines`, named `<pipeline>.<schedule>`) match: new ones
+  start **off**, changed ones keep their on/off state, removed ones are deleted. Re-run the workflow by hand
+  to republish.
+- **Running.** A schedule, or "Run" on the Pipelines page, invokes `gnome-pipelines-trigger`. It checks the
+  parameters against the published schema, records the run in the `gnome-pipelines` table and starts one
+  Fargate task with the pipeline's declared size; the runner then validates with the Pydantic model itself.
+  A failed run is put on the `gnome-alerts` bus as `PIPELINE_FAILED`; logs go to `/gnome-pipelines/runs`.
+- **The UI.** gnome-controller's Research pages call `/research/pipelines/*`, `/research/datasets/*` and
+  `/research/artifacts/*`, which it forwards to `gnome-pipelines-api` and `gnome-pipelines-data-api`. A
+  new endpoint here needs no controller change. Switching a schedule on or off is the only runtime edit.
 
 ## Running a pipeline locally
 
 ```
 poetry run gnome-pipelines list
 poetry run gnome-pipelines describe hltv_cs2                              # its parameters
-poetry run gnome-pipelines run hltv_cs2 --stage dev -p start_date=2026-10-11 -p end_date=2026-10-13 -p min_stars=0
+poetry run gnome-pipelines run hltv_cs2 --stage dev -p days_back=3 -p min_stars=0
 poetry run gnome-pipelines run cs2_prematch_predict --stage prod --params '{"dry_run": true}'
 poetry run gnome-pipelines run cs2_prematch_train --stage local          # ~/.cache/gnome-pipelines/warehouse
 

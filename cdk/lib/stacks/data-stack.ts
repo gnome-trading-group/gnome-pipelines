@@ -1,10 +1,15 @@
 import * as cdk from "aws-cdk-lib";
+import * as lambda from "aws-cdk-lib/aws-lambda";
+import * as s3 from "aws-cdk-lib/aws-s3";
 import * as s3tables from "aws-cdk-lib/aws-s3tables";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as ssm from "aws-cdk-lib/aws-ssm";
 import { Construct } from "constructs";
 import { Stage } from "@gnome-trading-group/gnome-shared-cdk";
+import { grantResearchTables } from "../research-tables";
 
+// gnome-controller's API Gateway routes /research/datasets/* and /research/artifacts/* to this function by name.
+export const DATA_API_FUNCTION = "gnome-pipelines-data-api";
 // Namespaces and parameter names must match gnomepy.data.CatalogConfig.
 const NAMESPACES = ["research", "artifacts"];
 // Secrets for gnome_pipelines.credentials, as gnome/pipelines/<name>. Values are set by hand with
@@ -61,5 +66,17 @@ export class DataStack extends cdk.Stack {
       secret.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN);
       this.secrets.push(secret);
     }
+
+    // A container image: gnomepy.data's pyarrow and pandas don't fit a zip Lambda.
+    const dataApi = new lambda.DockerImageFunction(this, "DataApiFunction", {
+      functionName: DATA_API_FUNCTION,
+      code: lambda.DockerImageCode.fromImageAsset("data-api"),
+      memorySize: 2048,
+      timeout: cdk.Duration.seconds(60),
+      description: "The datasets and artifacts API behind the controller's /research/datasets and /research/artifacts",
+    });
+    grantResearchTables(this, dataApi, bucket.attrTableBucketArn, { write: false });
+    // Signs artifact download links; the bucket belongs to gnome-controller's BacktestStack.
+    s3.Bucket.fromBucketName(this, "ResearchBucket", `gnome-research-${props.stage}`).grantRead(dataApi, "artifacts/*");
   }
 }

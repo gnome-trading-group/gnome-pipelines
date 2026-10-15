@@ -12,7 +12,7 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
-from gnome_pipelines import Pipeline, PipelineParams, PipelineResult, register_pipeline
+from gnome_pipelines import Pipeline, PipelineParams, PipelineResult, Resources, Schedule, register_pipeline
 from gnome_pipelines.environment import environment
 from gnome_pipelines.hltv_cs2.chrome import ChromeSource
 from gnome_pipelines.hltv_cs2.collect import collect_matches, collect_rankings
@@ -24,8 +24,9 @@ logger = logging.getLogger(__name__)
 
 
 class HltvCs2Params(PipelineParams):
-    start_date: datetime.date = Field(description="first match day to scrape")
-    end_date: datetime.date = Field(description="last match day to scrape")
+    start_date: datetime.date | None = Field(None, description="first match day to scrape; with end_date, overrides days_back")
+    end_date: datetime.date | None = Field(None, description="last match day to scrape; with start_date, overrides days_back")
+    days_back: int = Field(7, ge=1, description="without dates: the last N days, ending today (UTC)")
     min_stars: int = Field(2, ge=0, le=5, description=(
         "HLTV event stars: 0 = every match, 2 = top tier, 3 = big events. "
         "The models are trained on all tiers, so 0 keeps the data consistent."))
@@ -39,7 +40,9 @@ class HltvCs2Params(PipelineParams):
 
     @model_validator(mode="after")
     def _consistent(self) -> HltvCs2Params:
-        if self.end_date < self.start_date:
+        if (self.start_date is None) != (self.end_date is None):
+            raise ValueError("give both start_date and end_date, or neither to use days_back")
+        if self.start_date is not None and self.end_date < self.start_date:
             raise ValueError("end_date is before start_date")
         if self.demos and self.fetcher != "chrome":
             raise ValueError("demos are downloaded through Chrome; set fetcher=chrome")
@@ -47,23 +50,35 @@ class HltvCs2Params(PipelineParams):
             raise ValueError("refresh has nothing to fetch with fetcher=cache")
         return self
 
+    def window(self, today: datetime.date) -> tuple[datetime.date, datetime.date]:
+        if self.start_date is not None:
+            return self.start_date, self.end_date
+        return today - datetime.timedelta(days=self.days_back), today
+
 
 @register_pipeline
 class HltvCs2Pipeline(Pipeline[HltvCs2Params]):
     name = "hltv_cs2"
+    description = "HLTV matches, player stats, veto, head-to-head, form and rankings; then the match priors rebuilt"
+    resources = Resources(cpu=2048, memory=8192)
+    schedules = (
+        Schedule("weekly", "cron(0 6 ? * MON *)", {"days_back": 8, "min_stars": 0},
+                 "Mondays 06:00 UTC: the last 8 days, every tier (one day of overlap; cached pages cost nothing)"),
+    )
 
     def run(self, params: HltvCs2Params) -> PipelineResult:
         if params.fetcher == "chrome" and environment().in_task:
             raise ValueError("fetcher=chrome needs a screen for the Cloudflare challenge; run it locally")
+        start_date, end_date = params.window(datetime.datetime.now(datetime.timezone.utc).date())
 
         async def collect(fetcher: HltvFetcher) -> dict:
             matches = await collect_matches(
-                fetcher, params.start_date, params.end_date, min_stars_match=params.min_stars,
+                fetcher, start_date, end_date, min_stars_match=params.min_stars,
                 demos=params.demos, min_stars_demo=params.min_stars_demo,
                 match_ids=set(params.match_ids) if params.match_ids else None,
             )
-            rankings = await collect_rankings(fetcher, params.start_date, params.end_date)
-            return {**matches, "rankings": rankings}
+            rankings = await collect_rankings(fetcher, start_date, end_date)
+            return {**matches, "rankings": rankings, "start_date": start_date.isoformat(), "end_date": end_date.isoformat()}
 
         outputs = run_with_fetcher(_source(params.fetcher), _policy(params), collect)
         outputs["priors"] = publish_priors()

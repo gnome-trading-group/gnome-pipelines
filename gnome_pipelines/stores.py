@@ -11,9 +11,15 @@ def code_version() -> str:
     return os.environ.get("GNOME_CODE_VERSION", "gnome-pipelines@local")
 
 
+def run_id() -> str | None:
+    # Stamped on every publish as <pipeline>/<run id>, so a dataset's history or an artifact links back to its run.
+    run = os.environ.get("RUN_ID")
+    return f"{os.environ['PIPELINE_NAME']}/{run}" if run and os.environ.get("PIPELINE_NAME") else run
+
+
 def dataset_store() -> DatasetStore:
-    return DatasetStore(code_version=code_version(), run_id=os.environ.get("RUN_ID"))
+    return DatasetStore(code_version=code_version(), run_id=run_id())
 
 
 def artifact_store() -> ArtifactStore:
-    return ArtifactStore(code_version=code_version(), run_id=os.environ.get("RUN_ID"))
+    return ArtifactStore(code_version=code_version(), run_id=run_id())

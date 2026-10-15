@@ -1,7 +1,8 @@
-"""Start a pipeline run: record it, then start the Fargate task that runs gnome_pipelines.runner.
+"""Start a pipeline run: check its parameters, record it, then start the Fargate task that runs gnome_pipelines.runner.
 
-Called by the API (POST /research/pipelines/{pipelineName}/trigger) and by EventBridge Scheduler, which
-sends {"pipeline_name": ..., "trigger": "scheduled"} directly.
+Invoked by EventBridge Scheduler ({"pipeline_name", "trigger": "scheduled", "schedule", "parameters"}) and by
+the API Lambda ({"pipeline_name", "trigger": "manual", "parameters"}). A run's parameters are its schedule's
+or the caller's, over the pipeline's own defaults; its task size is the pipeline's declared resources.
 """
 from __future__ import annotations
 
@@ -12,7 +13,8 @@ from datetime import datetime, timezone
 
 import boto3
 
-from store import definition_key, now, response, run_key, table
+from params import problems
+from store import now, pipeline, run_key, table
 
 CLUSTER_ARN = os.environ["CLUSTER_ARN"]
 TASK_DEFINITION_ARN = os.environ["TASK_DEFINITION_ARN"]
@@ -23,34 +25,47 @@ CONTAINER_NAME = "pipeline"
 ecs = boto3.client("ecs")
 
 
-def handler(event: dict, context) -> dict:
-    path = event.get("pathParameters")
-    if path:
-        pipeline_name = path.get("pipelineName", "")
-        trigger = "manual"
-        params = json.loads(event.get("body") or "{}").get("parameters", {})
-    else:
-        pipeline_name = event.get("pipeline_name", "")
-        trigger = event.get("trigger", "manual")
-        params = event.get("parameters", {})
+class Rejected(Exception):
+    def __init__(self, status: int, error: str) -> None:
+        super().__init__(error)
+        self.status = status
 
-    definition = table.get_item(Key=definition_key(pipeline_name)).get("Item")
-    if not definition:
-        return response(404, {"error": f"Pipeline '{pipeline_name}' not found"})
+
+def handler(event: dict, context) -> dict:
+    trigger = event.get("trigger", "manual")
+    try:
+        return {"status": 202, **start_run(event.get("pipeline_name", ""), event.get("parameters") or {},
+                                            trigger, event.get("schedule"))}
+    except Rejected as e:
+        if trigger == "scheduled":
+            # A schedule that can't start is a broken deploy, so it fails the invocation and alarms.
+            raise
+        return {"status": e.status, "error": str(e)}
+
+
+def start_run(pipeline_name: str, params: dict, trigger: str, schedule: str | None) -> dict:
+    declared = pipeline(pipeline_name)
+    if declared is None:
+        raise Rejected(404, f"No pipeline named '{pipeline_name}'")
+    found = problems(declared["params_schema"], params)
+    if found:
+        raise Rejected(400, "Invalid parameters: " + "; ".join(found))
 
     run_id = f"{datetime.now(timezone.utc):%Y%m%dT%H%M%S}-{uuid.uuid4().hex[:8]}"
-    merged = {**definition.get("parameters", {}), **params}
-    table.put_item(Item={
+    record = {
         **run_key(pipeline_name, run_id),
         "pipeline_name": pipeline_name,
         "run_id": run_id,
         "status": "PENDING",
         "trigger": trigger,
-        "parameters": merged,
+        "parameters": params,
         "queued_at": now(),
-    })
+    }
+    if schedule:
+        record["schedule"] = schedule
+    table.put_item(Item=record)
 
-    cpu, memory = int(definition.get("cpu", 1024)), int(definition.get("memory", 4096))
+    cpu, memory = declared["resources"]["cpu"], declared["resources"]["memory"]
     started = ecs.run_task(
         cluster=CLUSTER_ARN,
         taskDefinition=TASK_DEFINITION_ARN,
@@ -66,7 +81,7 @@ def handler(event: dict, context) -> dict:
                 "environment": [
                     {"name": "PIPELINE_NAME", "value": pipeline_name},
                     {"name": "RUN_ID", "value": run_id},
-                    {"name": "PIPELINE_PARAMS", "value": json.dumps(merged, default=_number)},
+                    {"name": "PIPELINE_PARAMS", "value": json.dumps(params)},
                 ],
             }],
             "cpu": str(cpu),
@@ -90,9 +105,4 @@ def handler(event: dict, context) -> dict:
         UpdateExpression="SET ecs_task_arn = :arn",
         ExpressionAttributeValues={":arn": task_arn},
     )
-    return response(202, {"run_id": run_id, "ecs_task_arn": task_arn})
-
-
-def _number(value):
-    # DynamoDB hands numbers back as Decimal.
-    return int(value) if value % 1 == 0 else float(value)
+    return {"run_id": run_id, "ecs_task_arn": task_arn}

@@ -2,112 +2,147 @@ import json
 
 import pytest
 
-import create_pipeline
-import get_pipeline
-import list_pipelines
+import api
 import store
+import sync_schedules
 import trigger_pipeline
-import update_pipeline
 from tests.lambdas import fakes
 
-DEFINITION = {"pk": "PIPELINE", "sk": "hltv_cs2", "pipeline_name": "hltv_cs2", "parameters": {"min_stars": 0},
-              "schedule": "cron(0 6 ? * MON *)", "schedule_enabled": False, "cpu": 2048, "memory": 8192}
+SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "properties": {
+        "start_date": {"anyOf": [{"type": "string", "format": "date"}, {"type": "null"}], "default": None},
+        "days_back": {"type": "integer", "minimum": 1, "default": 7},
+        "fetcher": {"type": "string", "enum": ["zenrows", "chrome", "cache"], "default": "zenrows"},
+    },
+}
+HLTV = {"name": "hltv_cs2", "description": "HLTV", "params_schema": SCHEMA,
+        "resources": {"cpu": 2048, "memory": 8192}, "code_version": "gnome-pipelines@abc",
+        "schedules": [{"name": "weekly", "expression": "cron(0 6 ? * MON *)", "params": {"days_back": 8}, "description": ""}]}
+TRAIN = {"name": "cs2_prematch_train", "description": "train", "params_schema": {"type": "object", "properties": {}},
+         "resources": {"cpu": 1024, "memory": 4096}, "code_version": "gnome-pipelines@abc", "schedules": []}
 
 
 @pytest.fixture
-def table(monkeypatch):
-    t = fakes.Table([DEFINITION])
-    for module in (store, create_pipeline, get_pipeline, list_pipelines, trigger_pipeline, update_pipeline):
-        monkeypatch.setattr(module, "table", t)
-    return t
+def aws(monkeypatch):
+    env = {"table": fakes.Table(), "ecs": fakes.Ecs(), "scheduler": fakes.Scheduler(), "logs": fakes.Logs({})}
+    monkeypatch.setattr(store, "ssm", fakes.Ssm([HLTV, TRAIN]))
+    for module in (api, trigger_pipeline, sync_schedules):
+        monkeypatch.setattr(module, "table", env["table"], raising=False)
+    monkeypatch.setattr(trigger_pipeline, "ecs", env["ecs"])
+    monkeypatch.setattr(api, "ecs", env["ecs"])
+    monkeypatch.setattr(api, "scheduler", env["scheduler"])
+    monkeypatch.setattr(sync_schedules, "scheduler", env["scheduler"])
+    monkeypatch.setattr(api, "logs", env["logs"])
+    monkeypatch.setattr(api, "lambdas", fakes.Lambdas(trigger_pipeline.handler))
+    return env
 
 
-def body(result: dict) -> dict:
-    return json.loads(result["body"])
+def call(method, path, body=None, query=None):
+    result = api.handler({"httpMethod": method, **event_path(path), "body": json.dumps(body) if body is not None else None,
+                          "queryStringParameters": query}, None)
+    return result["statusCode"], json.loads(result["body"])
 
 
-def test_listing_hides_the_table_keys(table):
-    result = body(list_pipelines.handler({}, None))
+def test_lists_declared_pipelines_with_schedule_state_and_last_run(aws):
+    sync_schedules.handler({}, None)
+    call("POST", "/research/pipelines/hltv_cs2/runs", {"parameters": {}})
 
-    assert result["count"] == 1
-    assert "pk" not in result["pipelines"][0] and "sk" not in result["pipelines"][0]
+    status, body = call("GET", "/research/pipelines")
 
-
-def test_create_starts_unscheduled_and_refuses_a_duplicate(table):
-    request = {"body": json.dumps({"pipeline_name": "cs2_prematch_train", "schedule_enabled": True})}
-
-    created = create_pipeline.handler(request, None)
-    again = create_pipeline.handler(request, None)
-
-    assert created["statusCode"] == 201 and body(created)["pipeline"]["schedule_enabled"] is False
-    assert again["statusCode"] == 409
+    hltv = next(p for p in body["pipelines"] if p["name"] == "hltv_cs2")
+    assert status == 200 and body["count"] == 2
+    assert hltv["schedules"][0] | {"enabled": False, "synced": True} == hltv["schedules"][0]
+    assert hltv["last_run"]["status"] == "PENDING" and "pk" not in hltv["last_run"]
 
 
-def test_get_returns_newest_runs_first(table):
-    for run_id in ("20261013T000000-a", "20261014T000000-b"):
-        table.put_item(Item={**store.run_key("hltv_cs2", run_id), "run_id": run_id, "status": "SUCCEEDED"})
+def test_a_run_takes_the_declared_task_size_and_the_given_parameters(aws):
+    status, body = call("POST", "/research/pipelines/hltv_cs2/runs", {"parameters": {"days_back": 3}})
 
-    result = body(get_pipeline.handler({"pathParameters": {"pipelineName": "hltv_cs2"}}, None))
-
-    assert [r["run_id"] for r in result["runs"]] == ["20261014T000000-b", "20261013T000000-a"]
-
-
-def test_manual_trigger_records_the_run_and_starts_the_task_with_merged_parameters(table, monkeypatch):
-    ecs = fakes.Ecs()
-    monkeypatch.setattr(trigger_pipeline, "ecs", ecs)
-    event = {"pathParameters": {"pipelineName": "hltv_cs2"},
-             "body": json.dumps({"parameters": {"start_date": "2026-10-11"}})}
-
-    result = body(trigger_pipeline.handler(event, None))
-
-    run = table.get_item(Key=store.run_key("hltv_cs2", result["run_id"]))["Item"]
-    environment = {e["name"]: e["value"] for e in ecs.calls[0]["overrides"]["containerOverrides"][0]["environment"]}
-    assert run["status"] == "PENDING" and run["trigger"] == "manual" and run["ecs_task_arn"] == "arn:task/1"
-    assert json.loads(environment["PIPELINE_PARAMS"]) == {"min_stars": 0, "start_date": "2026-10-11"}
-    assert ecs.calls[0]["overrides"]["cpu"] == "2048"
+    task = aws["ecs"].calls[0]["overrides"]
+    environment = {e["name"]: e["value"] for e in task["containerOverrides"][0]["environment"]}
+    assert status == 202 and body["run_id"]
+    assert task["cpu"] == "2048" and task["memory"] == "8192"
+    assert json.loads(environment["PIPELINE_PARAMS"]) == {"days_back": 3}
 
 
-def test_scheduled_trigger_is_recorded_as_scheduled(table, monkeypatch):
-    monkeypatch.setattr(trigger_pipeline, "ecs", fakes.Ecs())
+def test_bad_parameters_are_refused_before_a_task_starts(aws):
+    status, body = call("POST", "/research/pipelines/hltv_cs2/runs",
+                        {"parameters": {"days_back": 0, "fetcher": "curl", "start_date": "11/10/2026", "dayz": 1}})
 
-    result = body(trigger_pipeline.handler({"pipeline_name": "hltv_cs2", "trigger": "scheduled"}, None))
+    assert status == 400 and aws["ecs"].calls == []
+    for expected in ("days_back: must be >= 1", "fetcher: must be one of zenrows, chrome, cache",
+                     "start_date: expected a date", "dayz: not a parameter"):
+        assert expected in body["error"]
 
-    assert table.get_item(Key=store.run_key("hltv_cs2", result["run_id"]))["Item"]["trigger"] == "scheduled"
+
+def test_an_undeclared_pipeline_is_404(aws):
+    assert call("POST", "/research/pipelines/nope/runs", {})[0] == 404
+    assert call("GET", "/research/pipelines/nope")[0] == 404
 
 
-def test_a_task_ecs_refuses_to_start_fails_the_run_and_the_invocation(table, monkeypatch):
+def test_a_scheduled_trigger_that_cant_start_raises_so_it_alarms(aws):
+    with pytest.raises(trigger_pipeline.Rejected):
+        trigger_pipeline.handler({"pipeline_name": "nope", "trigger": "scheduled"}, None)
+
+
+def test_ecs_refusing_a_task_fails_the_run_and_the_request(aws, monkeypatch):
     monkeypatch.setattr(trigger_pipeline, "ecs", fakes.Ecs(failures=[{"reason": "RESOURCE:MEMORY"}]))
 
-    with pytest.raises(RuntimeError, match="RESOURCE:MEMORY"):
-        trigger_pipeline.handler({"pipeline_name": "hltv_cs2"}, None)
+    status, body = call("POST", "/research/pipelines/hltv_cs2/runs", {})
 
-    runs = [i for i in table.items.values() if i["pk"] == "RUN#hltv_cs2"]
-    assert runs[0]["status"] == "FAILED"
-
-
-def test_trigger_of_an_unknown_pipeline_is_404(table, monkeypatch):
-    monkeypatch.setattr(trigger_pipeline, "ecs", fakes.Ecs())
-
-    assert trigger_pipeline.handler({"pipeline_name": "nope"}, None)["statusCode"] == 404
+    assert status == 502 and "RESOURCE:MEMORY" in body["error"]
+    assert [i["status"] for i in aws["table"].items.values()] == ["FAILED"]
 
 
-def test_enabling_a_schedule_creates_it_and_disabling_deletes_it(table, monkeypatch):
-    scheduler = fakes.Scheduler()
-    monkeypatch.setattr(update_pipeline, "scheduler", scheduler)
-    path = {"pathParameters": {"pipelineName": "hltv_cs2"}}
+def test_switching_a_schedule_keeps_everything_but_its_state(aws):
+    sync_schedules.handler({}, None)
 
-    update_pipeline.handler({**path, "body": json.dumps({"schedule_enabled": True})}, None)
-    update_pipeline.handler({**path, "body": json.dumps({"schedule_enabled": False})}, None)
+    status, _ = call("PUT", "/research/pipelines/hltv_cs2/schedules/weekly", {"enabled": True})
 
-    (created, spec), (deleted, _) = scheduler.calls
-    assert created == "create" and deleted == "delete"
-    assert spec["GroupName"] == "gnome-pipelines" and spec["Name"] == "hltv_cs2"
-    assert json.loads(spec["Target"]["Input"]) == {"pipeline_name": "hltv_cs2", "trigger": "scheduled"}
+    schedule = aws["scheduler"].schedules["hltv_cs2.weekly"]
+    assert status == 200 and schedule["State"] == "ENABLED"
+    assert schedule["ScheduleExpression"] == "cron(0 6 ? * MON *)"
+    assert call("PUT", "/research/pipelines/hltv_cs2/schedules/daily", {"enabled": True})[0] == 404
+    assert call("PUT", "/research/pipelines/hltv_cs2/schedules/weekly", {"enabled": "yes"})[0] == 400
 
 
-def test_updating_an_unknown_pipeline_is_404_and_creates_nothing(table, monkeypatch):
-    monkeypatch.setattr(update_pipeline, "scheduler", fakes.Scheduler())
+def test_logs_come_from_the_runs_task_stream(aws):
+    _, run = call("POST", "/research/pipelines/hltv_cs2/runs", {})
+    aws["logs"].streams["pipeline/pipeline/abc123"] = ["Starting", "Done"]
 
-    result = update_pipeline.handler({"pathParameters": {"pipelineName": "nope"}, "body": "{}"}, None)
+    status, body = call("GET", f"/research/pipelines/hltv_cs2/runs/{run['run_id']}/logs", query={"before": "b/x"})
 
-    assert result["statusCode"] == 404 and ("PIPELINE", "nope") not in table.items
+    assert status == 200 and [line["message"] for line in body["lines"]] == ["Starting", "Done"]
+    assert aws["logs"].requests[0]["nextToken"] == "b/x" and body["before"] == "b/earlier"
+
+
+def test_logs_before_the_container_starts_are_empty(aws):
+    _, run = call("POST", "/research/pipelines/hltv_cs2/runs", {})
+
+    assert call("GET", f"/research/pipelines/hltv_cs2/runs/{run['run_id']}/logs") == (200, {"before": None, "lines": []})
+
+
+def test_cancel_stops_the_task_once(aws):
+    _, run = call("POST", "/research/pipelines/hltv_cs2/runs", {})
+    path = f"/research/pipelines/hltv_cs2/runs/{run['run_id']}/cancel"
+
+    status, body = call("POST", path)
+
+    assert status == 200 and body["run"]["status"] == "CANCELLED"
+    assert aws["ecs"].stopped[0]["task"].endswith("/abc123")
+    assert call("POST", path)[0] == 409
+
+
+def test_unknown_routes_and_bad_bodies(aws):
+    assert call("DELETE", "/research/pipelines/hltv_cs2")[0] == 404
+    status = api.handler({"httpMethod": "POST", **event_path("/research/pipelines/hltv_cs2/runs"), "body": "{nope"}, None)
+    assert status["statusCode"] == 400
+
+
+def event_path(path: str) -> dict:
+    """How API Gateway presents a request to one of the controller's {proxy+} routes."""
+    root, _, rest = path.removeprefix("/research/").partition("/")
+    if not rest:
+        return {"resource": f"/research/{root}", "pathParameters": None}
+    return {"resource": f"/research/{root}/{{proxy+}}", "pathParameters": {"proxy": rest}}

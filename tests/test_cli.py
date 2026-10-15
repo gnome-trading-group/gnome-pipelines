@@ -31,7 +31,7 @@ class _Probe(Pipeline[_ProbeParams]):
                                             "params": params.model_dump()})
 
 
-RUN_VARIABLES = ("GNOME_STAGE", "RUN_ID", "GNOME_CODE_VERSION", "GNOME_LOCAL_WAREHOUSE", "AWS_PROFILE")
+RUN_VARIABLES = ("GNOME_STAGE", "RUN_ID", "GNOME_CODE_VERSION", "GNOME_LOCAL_WAREHOUSE", "AWS_PROFILE", "PIPELINE_NAME")
 
 
 @pytest.fixture
@@ -57,6 +57,8 @@ def test_local_run_writes_the_local_warehouse_stamped_with_the_checkout(probe, t
     stored = DatasetStore().load("probe", include_metadata=True)
     assert stored.note.tolist() == ["hi"]
     assert stored.code_version.iloc[0].startswith("gnome-pipelines@") and stored.code_version.iloc[0] != "gnome-pipelines@local"
+    snapshot = DatasetStore()._catalog.load_table("research.probe").current_snapshot()
+    assert snapshot.summary["gnome.run_id"].startswith("probe/local-")
 
 
 def test_prod_asks_first(probe):

@@ -8,7 +8,7 @@ from pathlib import Path
 import joblib
 from pydantic import Field
 
-from gnome_pipelines import Pipeline, PipelineParams, PipelineResult, register_pipeline
+from gnome_pipelines import Pipeline, PipelineParams, PipelineResult, Resources, Schedule, register_pipeline
 from gnome_pipelines.stores import artifact_store, dataset_store
 from gnomepy_research.models.cs2.win_probability.pre_map_features import PREVETO_FEATURE_NAMES
 from gnomepy_research.models.cs2.win_probability.pre_map_model import fit_production, load_training_frame
@@ -27,6 +27,9 @@ class CS2PrematchTrainParams(PipelineParams):
 @register_pipeline
 class CS2PrematchTrainPipeline(Pipeline[CS2PrematchTrainParams]):
     name = "cs2_prematch_train"
+    description = "Refit the CS2 pre-veto model on all history and publish it as a new artifact version"
+    resources = Resources(cpu=2048, memory=8192)
+    schedules = (Schedule("monthly", "cron(0 7 1 * ? *)", {}, "07:00 UTC on the 1st of each month"),)
 
     def run(self, params: CS2PrematchTrainParams) -> PipelineResult:
         ds = dataset_store()

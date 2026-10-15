@@ -210,6 +210,7 @@ class CS2PrematchPredictParams(PipelineParams):
 @register_pipeline
 class CS2PrematchPredictPipeline(Pipeline[CS2PrematchPredictParams]):
     name = "cs2_prematch_predict"
+    description = "Price upcoming CS2 BO3s, match their Polymarket markets and send gnome-launcher session triggers"
 
     def run(self, params: CS2PrematchPredictParams) -> PipelineResult:
         now = pd.Timestamp.now(tz="UTC").floor("s")
