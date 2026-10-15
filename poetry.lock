@@ -1429,14 +1429,14 @@ tqdm = ["tqdm"]
 
 [[package]]
 name = "gnomepy"
-version = "2.26.1"
+version = "2.26.2"
 description = ""
 optional = false
 python-versions = "<3.14,>=3.13"
 groups = ["main"]
 files = [
-    {file = "gnomepy-2.26.1-py3-none-any.whl", hash = "sha256:6e9a927f20ab39218a040a4650508d8ea6c29b25e65978f6a45e84e8921b2a22"},
-    {file = "gnomepy-2.26.1.tar.gz", hash = "sha256:03e4cf075492d1f0e97f46c575c4c2349f458f1e36533b92c5ee528dd45cbde4"},
+    {file = "gnomepy-2.26.2-py3-none-any.whl", hash = "sha256:ff1301b83d6235ce15d9ae5da9d646b819db655d698b55160d2f6fc8841c8edc"},
+    {file = "gnomepy-2.26.2.tar.gz", hash = "sha256:5bf7e0e7d8ed5ac29f661eb5f799edba0acf40e04acbf6459357f6087acc377c"},
 ]
 
 [package.dependencies]
@@ -1448,11 +1448,20 @@ dash = {version = ">=2.18.0,<3.0.0", optional = true, markers = "extra == \"back
 dash-bootstrap-components = {version = ">=1.6.0,<2.0.0", optional = true, markers = "extra == \"backtest\""}
 jpype1 = ">=1.5.0,<2.0.0"
 numpy = {version = ">=2.2.4,<3.0.0", optional = true, markers = "extra == \"backtest\""}
-pandas = {version = ">=2.2.3,<3.0.0", optional = true, markers = "extra == \"backtest\" or extra == \"live-data\""}
+pandas = [
+    {version = ">=2.2.3,<3.0.0", optional = true, markers = "extra == \"live-data\""},
+    {version = ">=2.2.3,<3.0.0", optional = true, markers = "extra == \"backtest\" or extra == \"live-data\""},
+]
 pandas-stubs = {version = ">=2.3.3,<2.4.0", optional = true, markers = "extra == \"backtest\""}
 plotly = {version = ">=6.6.0,<6.7.0", optional = true, markers = "extra == \"backtest\""}
-pyarrow = {version = ">=23.0.1,<24.0.0", optional = true, markers = "extra == \"backtest\" or extra == \"live-data\""}
-pyiceberg = {version = ">=0.12.0,<0.13.0", extras = ["pyiceberg-core"], optional = true, markers = "extra == \"backtest\" or extra == \"live-data\""}
+pyarrow = [
+    {version = ">=23.0.1,<24.0.0", optional = true, markers = "extra == \"live-data\""},
+    {version = ">=23.0.1,<24.0.0", optional = true, markers = "extra == \"backtest\" or extra == \"live-data\""},
+]
+pyiceberg = [
+    {version = ">=0.12.0,<0.13.0", extras = ["pyiceberg-core"], optional = true, markers = "extra == \"live-data\""},
+    {version = ">=0.12.0,<0.13.0", extras = ["pyiceberg-core"], optional = true, markers = "extra == \"backtest\" or extra == \"live-data\""},
+]
 pytz = ">=2025.1,<2026.0"
 pyyaml = ">=6.0,<7.0"
 requests = ">=2.32.3,<3.0.0"
@@ -5006,4 +5015,4 @@ cffi = ["cffi (>=1.11)"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.13,<3.14"
-content-hash = "2491cf5f4f5d33d2b7f92a3c0b3329f9bd65b893097f60e9640e5824f04f1039"
+content-hash = "20755377c9285f7923424566e59139aade5171d70a45893d132418fd921df555"

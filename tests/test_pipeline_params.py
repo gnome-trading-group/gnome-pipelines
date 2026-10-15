@@ -38,7 +38,7 @@ def test_refetch_bands_are_sorted_widest_first_and_must_be_positive():
 
 def test_execute_rejects_unknown_and_missing_params_before_running():
     with pytest.raises(ValidationError) as e:
-        execute("hltv_cs2", {"days_back": 0, "min_star": 0})
+        execute("hltv_cs2", {"days_back": -1, "min_star": 0})
 
     assert {err["loc"][0] for err in e.value.errors()} == {"days_back", "min_star"}
 
@@ -84,6 +84,7 @@ def test_hltv_without_dates_runs_the_last_days_back_days():
     params = HltvCs2Params.model_validate({"days_back": 8})
 
     assert params.window(date(2026, 10, 19)) == (date(2026, 10, 11), date(2026, 10, 19))
+    assert HltvCs2Params.model_validate({"days_back": 0}).window(date(2026, 10, 19)) == (date(2026, 10, 19), date(2026, 10, 19))
     assert HltvCs2Params.model_validate({"start_date": "2026-10-01", "end_date": "2026-10-02"}).window(
         date(2026, 10, 19)) == (date(2026, 10, 1), date(2026, 10, 2))
     with pytest.raises(ValidationError, match="both start_date and end_date"):

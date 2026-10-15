@@ -26,7 +26,8 @@ logger = logging.getLogger(__name__)
 class HltvCs2Params(PipelineParams):
     start_date: datetime.date | None = Field(None, description="first match day to scrape; with end_date, overrides days_back")
     end_date: datetime.date | None = Field(None, description="last match day to scrape; with start_date, overrides days_back")
-    days_back: int = Field(7, ge=1, description="without dates: the last N days, ending today (UTC)")
+    days_back: int = Field(7, ge=0, description=(
+        "without dates: today (UTC) and this many days before it; 0 = today only, 1 = yesterday and today"))
     min_stars: int = Field(2, ge=0, le=5, description=(
         "HLTV event stars: 0 = every match, 2 = top tier, 3 = big events. "
         "The models are trained on all tiers, so 0 keeps the data consistent."))
@@ -65,7 +66,7 @@ class HltvCs2Pipeline(Pipeline[HltvCs2Params]):
         # Daily, not weekly: cs2_upcoming builds live features from this history, and a week-old
         # history leaves Elo and form a week behind the matches being priced.
         Schedule("daily", "cron(0 6 * * ? *)", {"days_back": 2, "min_stars": 0},
-                 "06:00 UTC: the last 2 days, every tier (one day of overlap; cached pages cost nothing)"),
+                 "06:00 UTC: today and the 2 days before it, every tier (overlapping days are cached, so cost nothing)"),
     )
 
     def run(self, params: HltvCs2Params) -> PipelineResult:
