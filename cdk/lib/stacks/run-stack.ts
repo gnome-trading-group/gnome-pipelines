@@ -87,7 +87,8 @@ export class RunStack extends cdk.Stack {
       }),
       description: "GitHub Actions in gnome-pipelines pushes the pipelines image",
     });
-    repository.grantPush(githubRole);
+    // Pull too: the workflow's prod job promotes the image it pulls from dev ECR.
+    repository.grantPullPush(githubRole);
     new cdk.CfnOutput(this, "GithubImageRoleArn", {
       value: githubRole.roleArn,
       description: "The AWS_ECR_ROLE_ARN_DEV / AWS_ECR_ROLE_ARN_PROD secret in the gnome-pipelines GitHub repo",
