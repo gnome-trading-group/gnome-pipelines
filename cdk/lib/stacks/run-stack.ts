@@ -117,6 +117,11 @@ export class RunStack extends cdk.Stack {
     for (const secret of props.secrets) {
       secret.grantRead(taskRole);
     }
+    // runner.py announces each succeeded run, so consumers of its data (gnome-launcher's cs2 scanner) react to it.
+    taskRole.addToPolicy(new iam.PolicyStatement({
+      actions: ["events:PutEvents"],
+      resources: [`arn:aws:events:${this.region}:${this.account}:event-bus/default`],
+    }));
 
     const executionRole = new iam.Role(this, "TaskExecutionRole", {
       assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com"),

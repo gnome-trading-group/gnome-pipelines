@@ -1,7 +1,9 @@
 """Runs a pipeline: execute() for any caller, main() as the Fargate container's entry point.
 
 main() reads PIPELINE_NAME, RUN_ID, PIPELINE_PARAMS from the environment and records the run's status in
-the PIPELINES_TABLE item that the trigger Lambda created (cdk/lambda/store.py has the layout).
+the PIPELINES_TABLE item that the trigger Lambda created (cdk/lambda/store.py has the layout). A run that
+succeeds is announced on the account's default EventBridge bus (source "gnome.pipelines", detail-type
+"Pipeline Run Succeeded"), so consumers of its data - gnome-launcher's cs2 scanner - act as soon as it lands.
 `gnome-pipelines run` (cli.py) calls execute() directly and records nothing.
 """
 from __future__ import annotations
@@ -22,6 +24,9 @@ from gnome_pipelines.environment import environment
 from gnome_pipelines.stores import code_version
 
 logger = logging.getLogger(__name__)
+
+EVENT_SOURCE = "gnome.pipelines"
+SUCCEEDED_EVENT = "Pipeline Run Succeeded"
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -58,6 +63,20 @@ def execute(pipeline_name: str, params: dict) -> PipelineResult:
     return pipeline_cls().run(pipeline_cls.params_type.model_validate(params))
 
 
+def _announce_success(pipeline_name: str, run_id: str) -> None:
+    detail = {"pipeline": pipeline_name, "family": os.environ.get(families.FAMILY_VARIABLE), "run_id": run_id,
+              "code_version": code_version()}
+    try:
+        response = boto3.client("events").put_events(Entries=[{
+            "Source": EVENT_SOURCE, "DetailType": SUCCEEDED_EVENT, "Detail": json.dumps(detail),
+        }])
+        if response.get("FailedEntryCount"):
+            logger.error("EventBridge refused the success event for %s: %s", run_id, response["Entries"])
+    except Exception:
+        # The run's data is written and its status recorded; a consumer just misses this one nudge.
+        logger.exception("Couldn't announce run %s", run_id)
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -72,7 +91,8 @@ def main() -> None:
         return
     try:
         result = execute(pipeline_name, params)
-        _update_run(pipeline_name, run_id, "RUNNING", status="SUCCEEDED", outputs=_storable(result.outputs), completed_at=_now())
+        succeeded = _update_run(pipeline_name, run_id, "RUNNING", status="SUCCEEDED",
+                                outputs=_storable(result.outputs), completed_at=_now())
         logger.info("Pipeline %s succeeded: %s", pipeline_name, result.outputs)
     except Exception:
         logger.exception("Pipeline %s failed", pipeline_name)
@@ -81,6 +101,8 @@ def main() -> None:
                     error_message=traceback.format_exc()[-2000:],
                     completed_at=_now())
         sys.exit(1)
+    if succeeded:
+        _announce_success(pipeline_name, run_id)
 
 
 if __name__ == "__main__":

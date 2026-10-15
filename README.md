@@ -62,6 +62,9 @@ class HltvCs2Pipeline(Pipeline[HltvCs2Params]):
   Fargate task in the pipeline's family's task definition, with its declared size; the runner then validates
   with the Pydantic model itself.
   A failed run is put on the `gnome-alerts` bus as `PIPELINE_FAILED`; logs go to `/gnome-pipelines/runs`.
+  A succeeded run is announced on the account's default EventBridge bus (source `gnome.pipelines`,
+  detail-type `Pipeline Run Succeeded`, detail `{pipeline, family, run_id, code_version}`) for anything that
+  should act on fresh data: gnome-launcher's cs2 scanner runs on each `cs2_upcoming` success.
 - **The UI.** gnome-controller's Research pages call `/research/pipelines/*`, `/research/datasets/*` and
   `/research/artifacts/*`, which it forwards to `gnome-pipelines-api` and `gnome-pipelines-data-api`. A
   new endpoint here needs no controller change. Switching a schedule on or off is the only runtime edit.
