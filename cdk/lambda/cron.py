@@ -1,8 +1,10 @@
-"""When an EventBridge Scheduler cron(...) expression fires next (the service itself doesn't say).
+"""When an EventBridge Scheduler expression fires next (the service itself doesn't say).
 
-Fields are minutes hours day-of-month month day-of-week year, in UTC as the schedules are. Supports
-numbers, names (JAN, MON), *, ?, ranges, lists and steps; returns None for what it doesn't evaluate
-(L, W, #, and rate(...) expressions, which count from when the schedule was created).
+cron(...): fields are minutes hours day-of-month month day-of-week year, in UTC as the schedules are. Supports
+numbers, names (JAN, MON), *, ?, ranges, lists and steps; None for what it doesn't evaluate (L, W, #).
+
+rate(...): a rate counts from when the schedule was last created, enabled or updated, so its next fire is that
+moment plus a whole number of intervals.
 """
 from __future__ import annotations
 
@@ -17,6 +19,27 @@ SEARCH_DAYS = 366 * 2
 
 class Unsupported(ValueError):
     pass
+
+
+RATE_UNITS = {"minute": 1, "minutes": 1, "hour": 60, "hours": 60, "day": 1440, "days": 1440}
+
+
+def next_fire(expression: str, after: datetime, started: datetime | None) -> datetime | None:
+    """The next fire after `after`; `started` is when the schedule last started counting, for a rate."""
+    if expression.strip().startswith("rate("):
+        return next_rate(expression, after, started) if started else None
+    return next_run(expression, after)
+
+
+def next_rate(expression: str, after: datetime, started: datetime) -> datetime | None:
+    match = re.fullmatch(r"rate\((\d+) (\w+)\)", expression.strip())
+    if not match or match.group(2) not in RATE_UNITS or int(match.group(1)) == 0:
+        return None
+    interval = timedelta(minutes=int(match.group(1)) * RATE_UNITS[match.group(2)])
+    after, started = after.astimezone(timezone.utc), started.astimezone(timezone.utc)
+    if after < started:
+        return started
+    return started + interval * ((after - started) // interval + 1)
 
 
 def next_run(expression: str, after: datetime) -> datetime | None:

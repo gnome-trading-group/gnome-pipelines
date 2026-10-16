@@ -21,7 +21,7 @@ import boto3
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
-from cron import next_run
+from cron import next_fire
 from store import SCHEDULE_GROUP, api_path, manifest, now, pipeline, public, response, run_key, schedule_name, table
 
 TRIGGER_FUNCTION = os.environ["TRIGGER_FUNCTION"]
@@ -155,17 +155,19 @@ def cancel_run(name: str, run_id: str) -> dict:
     return response(200, {"run": public(run)})
 
 
-def _schedule_states() -> dict[str, str]:
+def _schedule_states() -> dict[str, dict]:
+    """Each schedule's summary: its State, and LastModificationDate, which a rate schedule counts from."""
     pages = scheduler.get_paginator("list_schedules").paginate(GroupName=SCHEDULE_GROUP)
-    return {s["Name"]: s["State"] for page in pages for s in page["Schedules"]}
+    return {s["Name"]: s for page in pages for s in page["Schedules"]}
 
 
-def _describe(declared: dict, states: dict[str, str]) -> dict:
+def _describe(declared: dict, states: dict[str, dict]) -> dict:
     now = datetime.now(timezone.utc)
     schedules = []
     for s in declared["schedules"]:
-        enabled = states.get(schedule_name(declared["name"], s["name"])) == "ENABLED"
-        upcoming = next_run(s["expression"], now) if enabled else None
+        summary = states.get(schedule_name(declared["name"], s["name"]), {})
+        enabled = summary.get("State") == "ENABLED"
+        upcoming = next_fire(s["expression"], now, summary.get("LastModificationDate")) if enabled else None
         schedules.append({
             **s, "enabled": enabled,
             # A schedule the sync hasn't created yet (or failed to) can't be switched on.

@@ -4,6 +4,7 @@ from __future__ import annotations
 import io
 import json
 import re
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from botocore.exceptions import ClientError
@@ -113,7 +114,8 @@ class Scheduler:
         self.calls: list[tuple[str, dict]] = []
 
     def get_paginator(self, name):
-        return _Pages([{"Schedules": [{"Name": n, "State": s["State"]} for n, s in self.schedules.items()]}])
+        return _Pages([{"Schedules": [{"Name": n, "State": s["State"], "LastModificationDate": s.get("LastModificationDate")}
+                                      for n, s in self.schedules.items()]}])
 
     def get_schedule(self, Name, GroupName):
         if Name not in self.schedules:
@@ -122,11 +124,11 @@ class Scheduler:
 
     def create_schedule(self, **kwargs):
         self.calls.append(("create", kwargs))
-        self.schedules[kwargs["Name"]] = kwargs
+        self.schedules[kwargs["Name"]] = {**kwargs, "LastModificationDate": datetime.now(timezone.utc)}
 
     def update_schedule(self, **kwargs):
         self.calls.append(("update", kwargs))
-        self.schedules[kwargs["Name"]] = kwargs
+        self.schedules[kwargs["Name"]] = {**kwargs, "LastModificationDate": datetime.now(timezone.utc)}
 
     def delete_schedule(self, Name, GroupName):
         self.calls.append(("delete", {"Name": Name}))

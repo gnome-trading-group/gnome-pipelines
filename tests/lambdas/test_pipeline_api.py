@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -168,3 +168,17 @@ def test_a_switched_on_schedule_reports_its_next_run(aws):
     upcoming = datetime.fromisoformat(schedule["next_run"])
     assert upcoming.weekday() == 0 and (upcoming.hour, upcoming.minute) == (6, 0)
     assert upcoming > datetime.now(timezone.utc)
+
+
+def test_a_switched_on_rate_schedule_reports_its_next_run_from_when_it_was_switched_on(aws, monkeypatch):
+    upcoming_pipeline = {**TRAIN, "name": "cs2_upcoming", "schedules": [
+        {"name": "quarter_hourly", "expression": "rate(15 minutes)", "params": {}, "description": ""}]}
+    monkeypatch.setattr(store, "ssm", fakes.Ssm([HLTV, upcoming_pipeline]))
+    sync_schedules.handler({}, None)
+    call("PUT", "/research/pipelines/cs2_upcoming/schedules/quarter_hourly", {"enabled": True})
+    switched_on = aws["scheduler"].schedules["cs2_upcoming.quarter_hourly"]["LastModificationDate"]
+
+    _, body = call("GET", "/research/pipelines/cs2_upcoming")
+
+    upcoming = datetime.fromisoformat(body["pipeline"]["schedules"][0]["next_run"])
+    assert upcoming - switched_on == timedelta(minutes=15)
