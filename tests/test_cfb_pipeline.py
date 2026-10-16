@@ -98,7 +98,12 @@ def test_clean_run_publishes_datasets_then_features(stubbed, monkeypatch):
     assert "cfb_update" in PIPELINE_REGISTRY
 
 
-def test_features_can_be_skipped(stubbed, monkeypatch):
+def test_features_and_context_refresh_can_be_skipped(stubbed, monkeypatch):
+    seen = []
     monkeypatch.setattr(pipeline, "run_checks", lambda t: [])
-    pipeline.CfbUpdatePipeline().run({"season": 2026, "features": False, "cache_root": "s3://x/apicache/cfbd"})
-    assert stubbed.published == ["cfb_games", "cfb_plays"]
+    monkeypatch.setattr(pipeline, "fetch_context", lambda client, years, refresh_current: seen.append(refresh_current))
+    pipeline.CfbUpdatePipeline().run({"season": 2026, "features": False, "refresh_context": False,
+                                      "cache_root": "s3://x/apicache/cfbd"})
+    assert stubbed.published == ["cfb_games", "cfb_plays"] and seen == [None]
+    pipeline.CfbUpdatePipeline().run({"season": 2026, "cache_root": "s3://x/apicache/cfbd"})
+    assert seen == [None, 2026]

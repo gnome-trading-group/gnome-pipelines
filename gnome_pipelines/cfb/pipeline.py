@@ -12,6 +12,8 @@ research bucket's apicache/cfbd/ prefix.
 Params (passed via PIPELINE_PARAMS env var):
   season: int    — default: the current season (July onwards is the new season; January bowls belong to the last)
   features: bool — rebuild and publish the feature tables (default true)
+  refresh_context: bool — refetch the season's context endpoints (talent, recruiting, portal, rosters, coaches,
+                   game PPA; about 9 calls) instead of reusing the mirror (default true; the 4pm run sets false)
   cache_root: str — S3 root of the response mirror (default: s3://<research bucket>/apicache/cfbd)
 """
 from __future__ import annotations
@@ -66,7 +68,7 @@ class CfbUpdatePipeline(Pipeline):
         pulled = cache_sync.pull(CACHE_DIR, remote)
         since = time.time()
         fetch(client, [season], refresh_current=season)
-        fetch_context(client, [season], refresh_current=season)
+        fetch_context(client, [season], refresh_current=season if params.get("refresh_context", True) else None)
         pushed = cache_sync.push(CACHE_DIR, remote, since)
 
         tables = build_all(client, [season])
