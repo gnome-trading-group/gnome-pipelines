@@ -1,24 +1,45 @@
-[tool.poetry]
+[project]
 name = "gnome-pipelines"
 version = "0.1.0"
 description = "Data pipelines, ingestion and their infrastructure for gnome research datasets"
-authors = ["mprey <masonprey7@gmail.com>"]
+authors = [{name = "mprey", email = "masonprey7@gmail.com"}]
 readme = "README.md"
+requires-python = ">=3.13,<3.14"
+# The base is what every family's image needs. Each family (gnome_pipelines/families/) has the extra of the
+# same name, and its image installs only that, so one family's heavy libraries never ride in another's.
+dependencies = [
+    "gnomepy[live-data] (>=2.26.2,<3.0.0)",
+    "gnomepy-research",
+    "pydantic (>=2.11,<3.0.0)",
+]
+
+[project.optional-dependencies]
+cs2 = [
+    "gnomepy-research[xgboost]",
+    "beautifulsoup4 (>=4.15.0,<5.0.0)",
+    "lxml (>=6.0,<7.0)",
+    "zenrows (>=1.4.1,<2.0.0)",
+    "nodriver (>=0.50.6)",
+    "demoparser2 (>=0.42.0)",
+]
+# CFB: the cfb_update pipeline, and the CFB scripts in gnome_pipelines/cfb/ that still run by hand.
+cfb = [
+    "gnomepy-research[pymc]",
+]
+
+[project.scripts]
+gnome-pipelines = "gnome_pipelines.cli:main"
+
+[tool.poetry]
+packages = [{include = "gnome_pipelines"}]
 
 [tool.poetry.dependencies]
-python = ">=3.13,<3.14"
-gnomepy = {version = "^2.25.2", extras = ["live-data"]}
-gnomepy-research = {git = "https://github.com/gnome-trading-group/gnomepy-research.git", tag = "v1.0.0"}
-beautifulsoup4 = "*"
-lxml = "^6.0"
-zenrows = "^1.4.1"
-nodriver = "*"
-demoparser2 = "*"
-opencv-python = "*"
+gnomepy-research = {git = "https://github.com/gnome-trading-group/gnomepy-research.git", tag = "v1.1.2"}
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.4.1"
 sqlalchemy = "^2.0.0"
+packaging = "*"
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]

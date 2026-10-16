@@ -1,56 +1,50 @@
 """
-HLTV data scraper for CS2 professional match history and team rankings.
+HLTV page parsers for CS2 match history and team rankings, and the ZenRows fetch.
 
-Scrapes three page types:
+Parses three page types:
   - /results?startDate=...&endDate=...  — paginated match result listings
   - /matches/{id}/...                   — per-match detail (lineups, veto, stats)
   - /ranking/teams/{year}/{month}/{day} — weekly team rankings
 
-Requires ZENROWS_API_KEY env var.
-Uses js_render + premium_proxy (25 credits/page) to bypass Cloudflare on HLTV.
-
-Usage (via HltvCs2Pipeline or CLI):
-    python -m gnome_pipelines.hltv_cs2.scraper \\
-        --mode matches --start-date 2023-09-01 --end-date 2026-09-28
+collect.py walks them; fetch.py decides where pages come from. The ZenRows fetch needs
+ZENROWS_API_KEY, or gnome/pipelines/zenrows in Secrets Manager, and uses js_render +
+premium_proxy (25 credits/page) to get past Cloudflare on HLTV.
 """
 from __future__ import annotations
 
-import argparse
-import calendar
 import datetime
 import logging
-import os
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
 from bs4 import BeautifulSoup
 from zenrows import ZenRowsClient
 
 from gnomepy_research.models.cs2.hltv.config import MAP_POOL
-from gnome_pipelines.hltv_cs2.html_cache import HtmlCache, is_cacheable, is_complete
-from gnome_pipelines.datasets import cs2
-from gnome_pipelines.hltv_cs2.publish import publish, publish_match_data
+from gnome_pipelines.credentials import secret
+from gnome_pipelines.hltv_cs2.html_cache import is_complete
 
 logger = logging.getLogger(__name__)
 
 _BASE_URL = "https://www.hltv.org"
-_REQUEST_DELAY = 3.0
-_MAX_WORKERS = 5
 _ZENROWS_PARAMS = {"js_render": True, "premium_proxy": True}
+CREDITS_PER_PAGE = 25
 
 
 class _Session:
     """ZenRows session — residential proxy + JS render bypasses Cloudflare on HLTV."""
 
     def __init__(self) -> None:
-        self._client = ZenRowsClient(os.environ["ZENROWS_API_KEY"])
+        self._client = ZenRowsClient(secret("zenrows", "ZENROWS_API_KEY"))
+        # ZenRows bills every 200, including the truncated pages _get_html retries.
+        self.billed = 0
 
     def get_html(self, url: str) -> str | None:
         try:
             resp = self._client.get(url, params=_ZENROWS_PARAMS)
             if resp.status_code == 200:
+                self.billed += 1
                 return resp.text
             logger.warning("ZenRows HTTP %s for %s", resp.status_code, url)
             return None
@@ -103,52 +97,6 @@ def _get(session: _Session, url: str, retries: int = 3) -> BeautifulSoup | None:
 # ---------------------------------------------------------------------------
 # Match result listings
 # ---------------------------------------------------------------------------
-
-def scrape_match_ids(
-    session: _Session,
-    start_date: datetime.date,
-    end_date: datetime.date,
-    min_stars: int = 2,
-) -> dict[int, int]:
-    """
-    Scrape all match IDs from HLTV results pages between start_date and end_date.
-    Returns {match_id: stars}.
-    min_stars filters by HLTV star rating (0=all, 2=top-tier+, 3=big events only).
-    Note: stars=1 is not a valid HLTV filter value and returns no results.
-    """
-    matches: dict[int, int] = {}
-    offset = 0
-    stars_param = f"&stars={min_stars}" if min_stars >= 2 else ""
-
-    while True:
-        url = f"{_BASE_URL}/results?startDate={start_date.isoformat()}&endDate={end_date.isoformat()}&offset={offset}{stars_param}"
-        soup = _get(session, url)
-        if soup is None:
-            break
-
-        links = soup.select(".results-all a.a-reset[href*='/matches/']")
-        if not links:
-            break
-
-        for link in links:
-            href = link.get("href", "")
-            parts = href.split("/")
-            if len(parts) >= 3:
-                try:
-                    stars_el = link.select_one(".stars")
-                    stars = len(stars_el.select(".star")) if stars_el else 0
-                    matches[int(parts[2])] = stars
-                except ValueError:
-                    pass
-
-        if len(links) < 100:
-            break
-        offset += 100
-        time.sleep(_REQUEST_DELAY)
-
-    logger.info("Found %d match IDs between %s and %s (min_stars=%d)", len(matches), start_date.isoformat(), end_date.isoformat(), min_stars)
-    return matches
-
 
 def parse_match_ids_from_html(html: str) -> tuple[list[tuple[int, str, int]], bool]:
     """Parse match IDs, URLs, and star ratings from a results page HTML. Returns ([(id, url, stars)], has_more_pages)."""
@@ -899,41 +847,6 @@ def parse_upcoming_match_html(soup: BeautifulSoup, match_id: int, stars: int = 0
     }
 
 
-def scrape_upcoming_matches(session: _Session, hours_ahead: float, bo_types: tuple[int, ...] = (3,)) -> list[dict]:
-    """Upcoming matches with known teams kicking off within hours_ahead, pages parsed."""
-    html = _get_html(session, f"{_BASE_URL}/matches")
-    if html is None:
-        logger.warning("could not fetch the upcoming matches listing")
-        return []
-    now = datetime.datetime.now(datetime.timezone.utc)
-    horizon = now + datetime.timedelta(hours=hours_ahead)
-    wanted = [
-        m for m in parse_upcoming_listing_html(html)
-        if m["match_time"] and now < m["match_time"] <= horizon and m["bo_type"] in bo_types
-        and m["team_a_name"] and m["team_b_name"] and not m["is_live"]
-    ]
-    out = []
-    for m in wanted:
-        page = _get_html(session, _match_url(m["match_id"]))
-        parsed = parse_upcoming_match_html(BeautifulSoup(page, "lxml"), m["match_id"], m["stars"]) if page else None
-        if parsed is not None:
-            out.append(parsed)
-    logger.info("%d upcoming matches within %.0fh, %d parsed", len(wanted), hours_ahead, len(out))
-    return out
-
-
-def scrape_match_detail(session: _Session, match_id: int, stars: int = 0,
-                        cache: HtmlCache | None = None) -> dict | None:
-    """Scrape one HLTV match page via ZenRows, caching it once the match is complete."""
-    url = _match_url(match_id)
-    html = _get_html(session, url)
-    if html is None:
-        return None
-    if cache is not None and is_cacheable("match", html):
-        cache.put(url, html, kind="match")
-    return parse_match_detail_html(BeautifulSoup(html, "lxml"), match_id, stars=stars)
-
-
 # ---------------------------------------------------------------------------
 # Weekly team rankings
 # ---------------------------------------------------------------------------
@@ -998,104 +911,3 @@ def parse_team_ranking_html(soup: BeautifulSoup, date: datetime.date) -> list[di
         })
 
     return rows if rows else None
-
-
-def scrape_team_ranking(session: _Session, date: datetime.date) -> list[dict] | None:
-    """Scrape HLTV team rankings for a specific Monday via ZenRows."""
-    month_name = calendar.month_name[date.month].lower()
-    url = f"{_BASE_URL}/ranking/teams/{date.year}/{month_name}/{date.day}"
-    soup = _get(session, url)
-    if soup is None:
-        return None
-    return parse_team_ranking_html(soup, date)
-
-
-# ---------------------------------------------------------------------------
-# Top-level scrape runners (called by HltvCs2Pipeline)
-# ---------------------------------------------------------------------------
-
-def run_matches(
-    start_date: datetime.date,
-    end_date: datetime.date,
-    min_stars: int = 2,
-    cache_pages: bool = True,
-) -> pd.DataFrame:
-    """
-    Scrape every match page between start_date and end_date and publish all datasets.
-
-    Publishes match history, per-player map stats, veto, head-to-head and recent
-    form through the same path as the local backfill, so production keeps every
-    dataset the features are built from current - not only match history.
-    """
-    session = _make_session()
-    cache = HtmlCache() if cache_pages else None
-
-    match_stars = scrape_match_ids(session, start_date, end_date, min_stars=min_stars)
-    logger.info("%d matches to scrape", len(match_stars))
-
-    out: dict[str, list[dict]] = {"rows": [], "players": [], "veto": [], "h2h": [], "recent_form": []}
-    total_done = 0
-    try:
-        with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as pool:
-            for batch_start in range(0, len(match_stars), 100):
-                batch = list(match_stars.items())[batch_start : batch_start + 100]
-                futures = {pool.submit(scrape_match_detail, session, mid, stars, cache): mid for mid, stars in batch}
-                for future in as_completed(futures):
-                    result = future.result()
-                    if result and result["rows"]:
-                        for key in out:
-                            out[key].extend(result.get(key, []))
-                    total_done += 1
-                logger.info("Progress: %d / %d matches", total_done, len(match_stars))
-    finally:
-        if cache is not None:
-            cache.drain()
-
-    df = pd.DataFrame(out["rows"])
-    if df.empty:
-        logger.warning("no match rows scraped for %s..%s", start_date, end_date)
-        return df
-    df["match_date"] = pd.to_datetime(df["match_date"])
-    logger.info("Scraped %d map rows", len(df))
-    publish_match_data(out["rows"], [], out["players"], out["veto"], out["h2h"], out["recent_form"])
-    return df
-
-
-def run_rankings(
-    start_date: datetime.date,
-    end_date: datetime.date,
-) -> pd.DataFrame:
-    """Scrape weekly HLTV team rankings with concurrency and publish them."""
-    session = _make_session()
-    mondays = _all_mondays(start_date, end_date)
-    logger.info("Scraping %d weekly rankings", len(mondays))
-
-    all_rows: list[dict] = []
-    with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as pool:
-        futures = {pool.submit(scrape_team_ranking, session, d): d for d in mondays}
-        for future in as_completed(futures):
-            rows = future.result()
-            if rows:
-                all_rows.extend(rows)
-
-    df = pd.DataFrame(all_rows)
-    logger.info("Scraped %d ranking rows", len(df))
-    publish(cs2.TEAM_RANKINGS, df)
-    return df
-
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", required=True, choices=["matches", "rankings"])
-    ap.add_argument("--start-date", required=True)
-    ap.add_argument("--end-date", required=True)
-    ap.add_argument("--min-stars", type=int, default=2)
-    args = ap.parse_args()
-
-    start = datetime.date.fromisoformat(args.start_date)
-    end = datetime.date.fromisoformat(args.end_date)
-    if args.mode == "matches":
-        run_matches(start, end, min_stars=args.min_stars)
-    else:
-        run_rankings(start, end)

@@ -9,8 +9,9 @@ from datetime import datetime, timezone
 import pandas as pd
 import pytest
 
-from gnome_pipelines import PIPELINE_REGISTRY
+from gnome_pipelines import families
 from gnome_pipelines.cfb import cache_sync, pipeline
+from gnome_pipelines.cfb.pipeline import CfbUpdateParams
 from gnome_pipelines.cfb.quality import Check
 
 NOW = datetime(2026, 10, 16, 8, 0, tzinfo=timezone.utc)
@@ -85,25 +86,35 @@ def stubbed(monkeypatch):
 def test_hard_check_failure_publishes_nothing(stubbed, monkeypatch):
     monkeypatch.setattr(pipeline, "run_checks", lambda t: [Check("games present", False, "0 games")])
     with pytest.raises(RuntimeError, match="games present"):
-        pipeline.CfbUpdatePipeline().run({"season": 2026, "cache_root": "s3://x/apicache/cfbd"})
+        pipeline.CfbUpdatePipeline().run(CfbUpdateParams(season=2026, cache_root="s3://x/apicache/cfbd"))
     assert stubbed.published == []
 
 
 def test_clean_run_publishes_datasets_then_features(stubbed, monkeypatch):
     monkeypatch.setattr(pipeline, "run_checks", lambda t: [Check("ok", True, ""), Check("soft", False, "1%", hard=False)])
-    out = pipeline.CfbUpdatePipeline().run({"season": 2026, "cache_root": "s3://x/apicache/cfbd"}).outputs
+    out = pipeline.CfbUpdatePipeline().run(CfbUpdateParams(season=2026, cache_root="s3://x/apicache/cfbd")).outputs
     assert stubbed.published == ["cfb_games", "cfb_plays", "cfb_team_week_features"]
     assert out["rows"] == {"cfb_games": 1, "cfb_plays": 2, "cfb_team_week_features": 1} and out["warnings"] == ["soft"]
     assert out["cache_pulled"] == 3 and out["cache_pushed"] == 5 and out["cfbd_remaining"] == 2400
-    assert "cfb_update" in PIPELINE_REGISTRY
+    assert families.pipelines("cfb") == {"cfb_update": pipeline.CfbUpdatePipeline}
 
 
 def test_features_and_context_refresh_can_be_skipped(stubbed, monkeypatch):
     seen = []
     monkeypatch.setattr(pipeline, "run_checks", lambda t: [])
     monkeypatch.setattr(pipeline, "fetch_context", lambda client, years, refresh_current: seen.append(refresh_current))
-    pipeline.CfbUpdatePipeline().run({"season": 2026, "features": False, "refresh_context": False,
-                                      "cache_root": "s3://x/apicache/cfbd"})
+    pipeline.CfbUpdatePipeline().run(CfbUpdateParams(season=2026, features=False, refresh_context=False,
+                                                      cache_root="s3://x/apicache/cfbd"))
     assert stubbed.published == ["cfb_games", "cfb_plays"] and seen == [None]
-    pipeline.CfbUpdatePipeline().run({"season": 2026, "cache_root": "s3://x/apicache/cfbd"})
+    pipeline.CfbUpdatePipeline().run(CfbUpdateParams(season=2026, cache_root="s3://x/apicache/cfbd"))
     assert seen == [None, 2026]
+
+
+def test_schedules_fire_in_season_only_and_the_afternoon_run_spares_context():
+    sched = {s.name: s for s in pipeline.CfbUpdatePipeline.schedules}
+    assert set(sched) == {"morning", "afternoon"}
+    assert sched["afternoon"].params == {"refresh_context": False} and sched["morning"].params == {}
+    for s in sched.values():
+        CfbUpdateParams.model_validate(s.params)
+        assert s.expression.endswith("* 1,8-12 ? *)")
+    assert CfbUpdateParams.model_validate({"refresh_context": "false"}).refresh_context is False

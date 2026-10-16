@@ -4,8 +4,9 @@ from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
-from gnome_pipelines.hltv_cs2 import backfill, html_cache as hc
-from gnome_pipelines.hltv_cs2.backfill import HltvFetcher
+from gnome_pipelines.hltv_cs2 import chrome, html_cache as hc
+from gnome_pipelines.hltv_cs2.chrome import ChromeSource
+from gnome_pipelines.hltv_cs2.fetch import HltvFetcher
 from gnome_pipelines.hltv_cs2.html_cache import (
     CachePolicy,
     HtmlCache,
@@ -126,19 +127,19 @@ def test_cache_hit_never_starts_chrome(tmp_path):
     url = "https://www.hltv.org/matches/2389638/x"
     cache.put(url, _COMPLETE, kind="match")
 
-    fetcher = HltvFetcher(cache)
-    html, fetched_at = asyncio.run(fetcher.html(url, kind="match", wait_selector="teamRanking"))
+    source = ChromeSource()
+    html, fetched_at = asyncio.run(HltvFetcher(cache, source).html(url, kind="match", wait_selector="teamRanking"))
 
     assert html == _COMPLETE
     assert fetched_at is not None
-    assert fetcher._browser is None, "a cache hit must not construct a browser"
-    assert fetcher._page is None
+    assert source._browser is None, "a cache hit must not construct a browser"
+    assert source._page is None
 
 
 def test_miss_would_need_a_browser(tmp_path, monkeypatch):
     """The complement: a miss does reach for the page, so the hit path is meaningful."""
     cache = HtmlCache(local_root=tmp_path / "l", remote_root=str(tmp_path / "r"))
-    fetcher = backfill.HltvFetcher(cache)
+    source = ChromeSource()
 
     reached = {"page": False}
 
@@ -149,9 +150,9 @@ def test_miss_would_need_a_browser(tmp_path, monkeypatch):
     async def _fake_get_html(page, url, wait_selector=None, wait_count=1):
         return None
 
-    monkeypatch.setattr(fetcher, "page", _fake_page)
-    monkeypatch.setattr(backfill, "_get_html", _fake_get_html)
-    asyncio.run(fetcher.html("https://www.hltv.org/matches/999/x", kind="match"))
+    monkeypatch.setattr(source, "page", _fake_page)
+    monkeypatch.setattr(chrome, "_get_html", _fake_get_html)
+    asyncio.run(HltvFetcher(cache, source).html("https://www.hltv.org/matches/999/x", kind="match"))
     assert reached["page"], "a miss must fall through to the browser"
 
 

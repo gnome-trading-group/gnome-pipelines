@@ -1,7 +1,10 @@
-"""ECS Fargate container entry point.
+"""Runs a pipeline: execute() for any caller, main() as the Fargate container's entry point.
 
-Reads PIPELINE_NAME, RUN_ID, PIPELINE_PARAMS from environment, dispatches
-to the registered pipeline class, and updates run status in DynamoDB.
+main() reads PIPELINE_NAME, RUN_ID, PIPELINE_PARAMS from the environment and records the run's status in
+the PIPELINES_TABLE item that the trigger Lambda created (cdk/lambda/store.py has the layout). A run that
+succeeds is announced on the account's default EventBridge bus (source "gnome.pipelines", detail-type
+"Pipeline Run Succeeded"), so consumers of its data - gnome-launcher's cs2 scanner - act as soon as it lands.
+`gnome-pipelines run` (cli.py) calls execute() directly and records nothing.
 """
 from __future__ import annotations
 
@@ -11,34 +14,67 @@ import os
 import sys
 import traceback
 from datetime import datetime, timezone
+from decimal import Decimal
 
 import boto3
+from botocore.exceptions import ClientError
 
-from gnome_pipelines import PIPELINE_REGISTRY
-from gnome_pipelines.cfb.pipeline import CfbUpdatePipeline  # noqa: F401 — registers pipeline
-from gnome_pipelines.cs2_prematch import CS2PrematchPredictPipeline, CS2PrematchTrainPipeline  # noqa: F401 — registers pipelines
-from gnome_pipelines.hltv_cs2 import HltvCs2Pipeline  # noqa: F401 — registers pipeline
+from gnome_pipelines import PipelineResult, families
+from gnome_pipelines.environment import environment
+from gnome_pipelines.stores import code_version
 
 logger = logging.getLogger(__name__)
 
-_TABLE_NAME = os.environ["DYNAMODB_TABLE"]
-_PIPELINES_PK = "__pipelines__"
-
+EVENT_SOURCE = "gnome.pipelines"
+SUCCEEDED_EVENT = "Pipeline Run Succeeded"
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _update_run(pipeline_name: str, run_id: str, **attrs: object) -> None:
-    table = boto3.resource("dynamodb").Table(_TABLE_NAME)
-    sk = f"RUN#{pipeline_name}#{run_id}"
-    update_expr = "SET " + ", ".join(f"#{k} = :{k}" for k in attrs)
-    table.update_item(
-        Key={"session_name": _PIPELINES_PK, "sk": sk},
-        UpdateExpression=update_expr,
-        ExpressionAttributeNames={f"#{k}": k for k in attrs},
-        ExpressionAttributeValues={f":{k}": v for k, v in attrs.items()},
-    )
+def _storable(value: object) -> object:
+    # DynamoDB takes neither floats nor numpy scalars, both of which pipeline outputs carry.
+    return json.loads(json.dumps(value, default=lambda v: v.item() if hasattr(v, "item") else str(v)), parse_float=Decimal)
+
+
+def _update_run(pipeline_name: str, run_id: str, expect: str, **attrs: object) -> bool:
+    """Move the run on from status `expect`; False if it has moved elsewhere (cancelled from the UI)."""
+    table = boto3.resource("dynamodb").Table(os.environ["PIPELINES_TABLE"])
+    try:
+        table.update_item(
+            Key={"pk": f"RUN#{pipeline_name}", "sk": run_id},
+            UpdateExpression="SET " + ", ".join(f"#{k} = :{k}" for k in attrs),
+            ConditionExpression="#status = :expect",
+            ExpressionAttributeNames={"#status": "status", **{f"#{k}": k for k in attrs}},
+            ExpressionAttributeValues={":expect": expect, **{f":{k}": v for k, v in attrs.items()}},
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        return False
+    return True
+
+
+def execute(pipeline_name: str, params: dict) -> PipelineResult:
+    available = families.available()
+    pipeline_cls = available.get(pipeline_name)
+    if pipeline_cls is None:
+        raise ValueError(f"Unknown pipeline '{pipeline_name}'. Available here: {sorted(available)}")
+    return pipeline_cls().run(pipeline_cls.params_type.model_validate(params))
+
+
+def _announce_success(pipeline_name: str, run_id: str) -> None:
+    detail = {"pipeline": pipeline_name, "family": os.environ.get(families.FAMILY_VARIABLE), "run_id": run_id,
+              "code_version": code_version()}
+    try:
+        response = boto3.client("events").put_events(Entries=[{
+            "Source": EVENT_SOURCE, "DetailType": SUCCEEDED_EVENT, "Detail": json.dumps(detail),
+        }])
+        if response.get("FailedEntryCount"):
+            logger.error("EventBridge refused the success event for %s: %s", run_id, response["Entries"])
+    except Exception:
+        # The run's data is written and its status recorded; a consumer just misses this one nudge.
+        logger.exception("Couldn't announce run %s", run_id)
 
 
 def main() -> None:
@@ -48,29 +84,25 @@ def main() -> None:
     run_id = os.environ["RUN_ID"]
     params = json.loads(os.environ.get("PIPELINE_PARAMS", "{}"))
 
-    logger.info("Starting pipeline=%s run_id=%s params=%s", pipeline_name, run_id, params)
+    logger.info("Starting pipeline=%s run_id=%s stage=%s params=%s", pipeline_name, run_id, environment().stage.value, params)
 
-    pipeline_cls = PIPELINE_REGISTRY.get(pipeline_name)
-    if pipeline_cls is None:
-        msg = f"Unknown pipeline '{pipeline_name}'. Registered: {list(PIPELINE_REGISTRY)}"
-        logger.error(msg)
-        _update_run(pipeline_name, run_id, status="FAILED", error_message=msg, completed_at=_now())
-        sys.exit(1)
-
-    _update_run(pipeline_name, run_id, status="RUNNING", started_at=_now())
-
-    pipeline = pipeline_cls()
+    if not _update_run(pipeline_name, run_id, "PENDING", status="RUNNING", started_at=_now(), code_version=code_version()):
+        logger.info("Run %s was cancelled before it started", run_id)
+        return
     try:
-        result = pipeline.run(params)
-        _update_run(pipeline_name, run_id, status="SUCCEEDED", outputs=result.outputs, completed_at=_now())
+        result = execute(pipeline_name, params)
+        succeeded = _update_run(pipeline_name, run_id, "RUNNING", status="SUCCEEDED",
+                                outputs=_storable(result.outputs), completed_at=_now())
         logger.info("Pipeline %s succeeded: %s", pipeline_name, result.outputs)
     except Exception:
         logger.exception("Pipeline %s failed", pipeline_name)
-        _update_run(pipeline_name, run_id,
+        _update_run(pipeline_name, run_id, "RUNNING",
                     status="FAILED",
                     error_message=traceback.format_exc()[-2000:],
                     completed_at=_now())
         sys.exit(1)
+    if succeeded:
+        _announce_success(pipeline_name, run_id)
 
 
 if __name__ == "__main__":

@@ -1,21 +1,14 @@
-"""CFB data refresh — runs on ECS Fargate via gnome-controller, twice daily in season (4am and 4pm ET, Aug–Jan).
+"""CFB season refresh: games, plays, drives, lines and context fetched from CFBD, checked, published, and the season's
+point-in-time feature tables rebuilt.
 
 One run, for one season:
 1. pull the CFBD response cache from S3, fetch the season (its season-level endpoints refreshed), push back what
    was written;
 2. build the cfb_* tables and run the quality checks — a hard failure fails the run before anything is published;
-3. publish the cfb_* datasets, then rebuild and publish the season's point-in-time feature tables.
+3. publish the cfb_* datasets, then rebuild and publish the season's feature tables.
 
-Requires CFBD_API_KEY in the task environment (injected like the HLTV job's ZENROWS_API_KEY) and read/write on the
-research bucket's apicache/cfbd/ prefix. Measured 2026-10-16 for one season: about 10 minutes end to end, 2 GB peak
-(the feature rebuild); 1 vCPU / 4 GB is enough.
-
-Params (passed via PIPELINE_PARAMS env var):
-  season: int    — default: the current season (July onwards is the new season; January bowls belong to the last)
-  features: bool — rebuild and publish the feature tables (default true)
-  refresh_context: bool — refetch the season's context endpoints (talent, recruiting, portal, rosters, coaches,
-                   game PPA; about 9 calls) instead of reusing the mirror (default true; the 4pm run sets false)
-  cache_root: str — S3 root of the response mirror (default: s3://<research bucket>/apicache/cfbd)
+The CFBD key is gnome/pipelines/cfbd in Secrets Manager (CFBD_API_KEY locally). Measured 2026-10-16 for one season:
+about 10 minutes end to end and 2 GB peak (the feature rebuild).
 """
 from __future__ import annotations
 
@@ -24,8 +17,9 @@ import time
 from datetime import datetime, timezone
 
 import pandas as pd
+from pydantic import Field
 
-from gnome_pipelines import Pipeline, PipelineResult, register_pipeline
+from gnome_pipelines import Pipeline, PipelineParams, PipelineResult, Resources, Schedule
 from gnome_pipelines.cfb import cache_sync
 from gnome_pipelines.cfb.cfbd_client import CACHE_DIR, CfbdClient
 from gnome_pipelines.cfb.context import fetch_context
@@ -57,19 +51,37 @@ def freshness(games: pd.DataFrame, now: datetime) -> dict:
             "games_missing_final": int(missing.sum())}
 
 
-@register_pipeline
-class CfbUpdatePipeline(Pipeline):
-    name = "cfb_update"
+class CfbUpdateParams(PipelineParams):
+    season: int | None = Field(None, ge=2014, description=(
+        "season to refresh; default the current one (July onwards is the new season, January bowls belong to the last)"))
+    features: bool = Field(True, description="rebuild and publish the season's point-in-time feature tables")
+    refresh_context: bool = Field(True, description=(
+        "refetch the season's context endpoints (talent, recruiting, portal, rosters, coaches, game PPA; about 9 CFBD "
+        "calls) instead of reusing the S3 mirror"))
+    cache_root: str | None = Field(None, description="S3 root of the CFBD response mirror; default s3://<research bucket>/apicache/cfbd")
 
-    def run(self, params: dict) -> PipelineResult:
+
+class CfbUpdatePipeline(Pipeline[CfbUpdateParams]):
+    name = "cfb_update"
+    description = "CFB season refresh from CFBD (games, plays, drives, lines, context), quality-gated publish, feature tables rebuilt"
+    resources = Resources(cpu=1024, memory=4096)
+    schedules = (
+        Schedule("morning", "cron(0 8 * 1,8-12 ? *)", {},
+                 "08:00 UTC (4am EDT, 3am EST), Jan and Aug-Dec: the night's finals, context refetched"),
+        # The context endpoints barely move in season, so the second run reuses the mirror and spends about half the calls.
+        Schedule("afternoon", "cron(0 20 * 1,8-12 ? *)", {"refresh_context": False},
+                 "20:00 UTC (4pm EDT, 3pm EST), Jan and Aug-Dec: late West Coast finals and early kickoffs"),
+    )
+
+    def run(self, params: CfbUpdateParams) -> PipelineResult:
         now = datetime.now(timezone.utc)
-        season = int(params.get("season", current_season(now)))
-        remote = params.get("cache_root") or cache_sync.default_remote_root()
+        season = params.season or current_season(now)
+        remote = params.cache_root or cache_sync.default_remote_root()
         client = CfbdClient()
         pulled = cache_sync.pull(CACHE_DIR, remote)
         since = time.time()
         fetch(client, [season], refresh_current=season)
-        fetch_context(client, [season], refresh_current=season if params.get("refresh_context", True) else None)
+        fetch_context(client, [season], refresh_current=season if params.refresh_context else None)
         pushed = cache_sync.push(CACHE_DIR, remote, since)
 
         tables = build_all(client, [season])
@@ -83,7 +95,7 @@ class CfbUpdatePipeline(Pipeline):
         for name, df in tables.items():
             ds.publish(SPECS[name], df)
             rows[name] = len(df)
-        if params.get("features", True):
+        if params.features:
             for name, df in build_features(SourceData.load(ds), [season]).items():
                 ds.publish(FEATURE_SPECS[name], df)
                 rows[name] = len(df)

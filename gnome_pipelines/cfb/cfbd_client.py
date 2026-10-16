@@ -8,11 +8,12 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
-import os
 import time
 from pathlib import Path
 
 import requests
+
+from gnome_pipelines.credentials import secret
 
 BASE_URL = "https://api.collegefootballdata.com"
 CACHE_DIR = Path.home() / ".cache" / "gnomepy" / "cfbd"
@@ -24,7 +25,7 @@ class BudgetExceeded(RuntimeError):
 
 class CfbdClient:
     def __init__(self, api_key: str | None = None, cache_dir: Path = CACHE_DIR, reserve: int = 100) -> None:
-        self._api_key = api_key or os.environ["CFBD_API_KEY"]
+        self._api_key = api_key or secret("cfbd", "CFBD_API_KEY")
         self._cache_dir = cache_dir
         # Calls held back so a runaway fetch can't strand the month's quota for live/debug use.
         self._reserve = reserve
