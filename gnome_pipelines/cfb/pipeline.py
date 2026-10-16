@@ -7,7 +7,8 @@ One run, for one season:
 3. publish the cfb_* datasets, then rebuild and publish the season's point-in-time feature tables.
 
 Requires CFBD_API_KEY in the task environment (injected like the HLTV job's ZENROWS_API_KEY) and read/write on the
-research bucket's apicache/cfbd/ prefix.
+research bucket's apicache/cfbd/ prefix. Measured 2026-10-16 for one season: about 10 minutes end to end, 2 GB peak
+(the feature rebuild); 1 vCPU / 4 GB is enough.
 
 Params (passed via PIPELINE_PARAMS env var):
   season: int    — default: the current season (July onwards is the new season; January bowls belong to the last)
