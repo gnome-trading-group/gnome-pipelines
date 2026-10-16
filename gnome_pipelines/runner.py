@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 import boto3
 
 from gnome_pipelines import PIPELINE_REGISTRY
+from gnome_pipelines.cfb.pipeline import CfbUpdatePipeline  # noqa: F401 — registers pipeline
 from gnome_pipelines.cs2_prematch import CS2PrematchPredictPipeline, CS2PrematchTrainPipeline  # noqa: F401 — registers pipelines
 from gnome_pipelines.hltv_cs2 import HltvCs2Pipeline  # noqa: F401 — registers pipeline
 

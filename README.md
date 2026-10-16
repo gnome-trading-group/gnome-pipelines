@@ -11,7 +11,7 @@ through `gnomepy.data`; gnomepy-research holds the feature and model code these 
 | `gnome_pipelines/hltv_cs2/` | HLTV scraper, local backfill, page cache, demo parser, publishing, the weekly `hltv_cs2` pipeline |
 | `gnome_pipelines/cs2_prematch/` | `cs2_prematch_train` and `cs2_prematch_predict` pipelines |
 | `gnome_pipelines/cs2_round_model/` | Round win probability model training |
-| `gnome_pipelines/cfb/` | CFBD ingestion, quality checks, feature snapshots, team-week posteriors |
+| `gnome_pipelines/cfb/` | CFBD ingestion, quality checks, feature snapshots, team-week posteriors, and the `cfb_update` pipeline (twice daily in season; needs `CFBD_API_KEY`; mirrors the CFBD response cache to `s3://<research bucket>/apicache/cfbd`) |
 | `gnome_pipelines/runner.py` | Fargate entry point the controller's scheduler starts (`PIPELINE_NAME`, `RUN_ID`, `PIPELINE_PARAMS`) |
 | `Dockerfile`, `.github/workflows/build-image.yml` | The `gnomepy-pipelines` image, pushed to ECR in dev and prod on every push to main |
 | `cdk/` | The S3 Tables bucket, its namespaces and the SSM parameters `gnomepy.data` finds it by |
