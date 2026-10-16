@@ -117,6 +117,12 @@ export class RunStack extends cdk.Stack {
     for (const secret of props.secrets) {
       secret.grantRead(taskRole);
     }
+    // gnomepy reads the registry API key's value through API Gateway, from the id exported by gnome-registry.
+    const registryApiKeyId = cdk.Fn.importValue("RegistryApiKeyId");
+    taskRole.addToPolicy(new iam.PolicyStatement({
+      actions: ["apigateway:GET"],
+      resources: [`arn:aws:apigateway:${this.region}::/apikeys/${registryApiKeyId}`],
+    }));
     // runner.py announces each succeeded run, so consumers of its data (gnome-launcher's cs2 scanner) react to it.
     taskRole.addToPolicy(new iam.PolicyStatement({
       actions: ["events:PutEvents"],
@@ -146,7 +152,7 @@ export class RunStack extends cdk.Stack {
       taskDefinition.addContainer(CONTAINER_NAME, {
         image: ecs.ContainerImage.fromEcrRepository(repository, `${family}-latest`),
         logging: ecs.LogDrivers.awsLogs({ streamPrefix: "pipeline", logGroup }),
-        environment: { PIPELINES_TABLE: table.tableName, GNOME_STAGE: props.stage },
+        environment: { PIPELINES_TABLE: table.tableName, GNOME_STAGE: props.stage, REGISTRY_API_KEY_ID: registryApiKeyId },
       });
       taskDefinitions[family] = taskDefinition;
     }

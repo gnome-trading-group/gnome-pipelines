@@ -817,7 +817,7 @@ tardis = ["tardis-dev (>=4.0.0,<5.0.0)"]
 
 [[package]]
 name = "gnomepy-research"
-version = "1.1.1"
+version = "1.1.2"
 description = "Signal research, replay, metrics, and strategy modules for gnomepy"
 optional = false
 python-versions = ">=3.13,<3.14"
@@ -843,8 +843,8 @@ xgboost = ["joblib (>=1.6.0,<2.0.0)", "scikit-learn (>=1.9.1,<2.0.0)", "xgboost 
 [package.source]
 type = "git"
 url = "https://github.com/gnome-trading-group/gnomepy-research.git"
-reference = "v1.1.1"
-resolved_reference = "6fceb7feb9fc4f4b757c5e314f793b35eef72600"
+reference = "v1.1.2"
+resolved_reference = "7a8f91fa9bd4ce54ea7fd6a72ee8c3e782cb713e"
 
 [[package]]
 name = "google-crc32c"
@@ -3924,4 +3924,4 @@ cs2 = ["beautifulsoup4", "demoparser2", "gnomepy-research", "lxml", "nodriver", 
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.13,<3.14"
-content-hash = "30160ff60498b7286da6197006b3850d15c4457ece8ba7a6564f9d3f7d431171"
+content-hash = "6684d6dd8b32a4388d678f001fac1b51618ff1a026bf48d676d71d777f0a79f5"
