@@ -18,6 +18,7 @@ def test_every_pipeline_declares_its_params():
         "hltv_cs2": "HltvCs2Params",
         "cs2_prematch_train": "CS2PrematchTrainParams",
         "cs2_upcoming": "CS2UpcomingParams",
+        "cfb_update": "CfbUpdateParams",
     }
 
 

@@ -31,7 +31,7 @@ const TASK_INDEX = "by-task";
 // trigger_pipeline.py overrides the container by this name.
 const CONTAINER_NAME = "pipeline";
 // gnome_pipelines/families/: one image and task definition each. CI pushes <family>-<sha> and <family>-latest.
-const FAMILIES = ["cs2"];
+const FAMILIES = ["cs2", "cfb"];
 // The registry's alerting stack names its bus, so any service can put alerts on it without depending on that stack.
 const ALERT_BUS_NAME = "gnome-alerts";
 const LAMBDA_RUNTIME = lambda.Runtime.PYTHON_3_13;

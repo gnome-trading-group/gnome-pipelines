@@ -22,7 +22,7 @@ cs2 = [
     "nodriver (>=0.50.6)",
     "demoparser2 (>=0.42.0)",
 ]
-# The CFB scripts in gnome_pipelines/cfb/ run locally until they become a family of pipelines.
+# CFB: the cfb_update pipeline, and the CFB scripts in gnome_pipelines/cfb/ that still run by hand.
 cfb = [
     "gnomepy-research[pymc]",
 ]
