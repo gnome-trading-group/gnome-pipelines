@@ -785,14 +785,14 @@ tqdm = ["tqdm"]
 
 [[package]]
 name = "gnomepy"
-version = "2.26.2"
+version = "2.29.0"
 description = ""
 optional = false
 python-versions = "<3.14,>=3.13"
 groups = ["main"]
 files = [
-    {file = "gnomepy-2.26.2-py3-none-any.whl", hash = "sha256:ff1301b83d6235ce15d9ae5da9d646b819db655d698b55160d2f6fc8841c8edc"},
-    {file = "gnomepy-2.26.2.tar.gz", hash = "sha256:5bf7e0e7d8ed5ac29f661eb5f799edba0acf40e04acbf6459357f6087acc377c"},
+    {file = "gnomepy-2.29.0-py3-none-any.whl", hash = "sha256:21b13a0697b1c5c7c02641d35ae0e3635c21f96927d022327f884ba9e80107e0"},
+    {file = "gnomepy-2.29.0.tar.gz", hash = "sha256:0ca6052d7d54e92df10584e3dd04f4b8062139859feb6f205a34423ce6e140ec"},
 ]
 
 [package.dependencies]
@@ -817,7 +817,7 @@ tardis = ["tardis-dev (>=4.0.0,<5.0.0)"]
 
 [[package]]
 name = "gnomepy-research"
-version = "1.1.0"
+version = "1.1.1"
 description = "Signal research, replay, metrics, and strategy modules for gnomepy"
 optional = false
 python-versions = ">=3.13,<3.14"
@@ -826,7 +826,7 @@ files = []
 develop = false
 
 [package.dependencies]
-gnomepy = {version = ">=2.25.2,<3.0.0", extras = ["live-data", "strategy"]}
+gnomepy = {version = ">=2.29.0,<3.0.0", extras = ["live-data", "strategy"]}
 joblib = {version = ">=1.6.0,<2.0.0", optional = true}
 nutpie = {version = ">=0.16.11,<0.17.0", extras = ["pymc"], optional = true}
 pymc = {version = ">=6.3.2,<7.0.0", optional = true}
@@ -836,15 +836,15 @@ xgboost-cpu = {version = ">=3.4.1,<4.0.0", optional = true, markers = "sys_platf
 
 [package.extras]
 pymc = ["nutpie[pymc] (>=0.16.11,<0.17.0)", "pymc (>=6.3.2,<7.0.0)"]
-research = ["gnomepy[backtest] (>=2.25.2,<3.0.0)"]
+research = ["gnomepy[backtest] (>=2.29.0,<3.0.0)"]
 websocket = ["websocket-client (>=1.9.0,<2.0.0)"]
 xgboost = ["joblib (>=1.6.0,<2.0.0)", "scikit-learn (>=1.9.1,<2.0.0)", "xgboost (>=3.4.1,<4.0.0) ; sys_platform != \"linux\"", "xgboost-cpu (>=3.4.1,<4.0.0) ; sys_platform == \"linux\""]
 
 [package.source]
 type = "git"
 url = "https://github.com/gnome-trading-group/gnomepy-research.git"
-reference = "v1.1.0"
-resolved_reference = "6317fcb8ec78cc89ea319b52b5f065518cb630ed"
+reference = "v1.1.1"
+resolved_reference = "6fceb7feb9fc4f4b757c5e314f793b35eef72600"
 
 [[package]]
 name = "google-crc32c"
@@ -3924,4 +3924,4 @@ cs2 = ["beautifulsoup4", "demoparser2", "gnomepy-research", "lxml", "nodriver", 
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.13,<3.14"
-content-hash = "c03552c784b0441cb389e9211d78d701eed4059cd0de1a46b8ef2e7f0f545b62"
+content-hash = "30160ff60498b7286da6197006b3850d15c4457ece8ba7a6564f9d3f7d431171"

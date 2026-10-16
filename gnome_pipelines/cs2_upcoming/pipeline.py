@@ -340,6 +340,8 @@ class CS2UpcomingPipeline(Pipeline[CS2UpcomingParams]):
         runs = _load_since(ds, cs2.UPCOMING_RUNS, now.normalize())
         spent = int(runs.credits.sum()) if len(runs) else 0
         over_budget = spent >= params.daily_credit_budget
+        logger.info("%d matches tracked from the last %d days; %d of %d credits spent today",
+                    len(prev), params.lookback_days, spent, params.daily_credit_budget)
         if over_budget:
             logger.warning("%d credits spent today, budget %d: slowest refetch interval for every match",
                            spent, params.daily_credit_budget)
@@ -353,6 +355,8 @@ class CS2UpcomingPipeline(Pipeline[CS2UpcomingParams]):
             return PipelineResult(status="succeeded", outputs={"listing_ok": False, "credits": credits})
 
         rows, pages = fetched
+        logger.info("%d matches in the window, %d pages due a refetch, %d credits billed",
+                    len(rows), len(pages), credits)
         parsed = []
         for mid, page in pages.items():
             p = parse_upcoming_match_html(BeautifulSoup(page, "lxml"), mid, rows[mid]["stars"]) if page else None
@@ -362,7 +366,9 @@ class CS2UpcomingPipeline(Pipeline[CS2UpcomingParams]):
             parsed.append(p)
             rows[mid].update(team_a_id=int(p["match"]["team_a_id"]), team_b_id=int(p["match"]["team_b_id"]))
 
+        logger.info("%d of %d pages parsed", len(parsed), len(pages))
         features = feature_rows(parsed, ds) if parsed else pd.DataFrame()
+        logger.info("%d feature rows built", len(features))
         for mid in (features.match_id.astype(int).tolist() if len(features) else []):
             rows[mid]["features_at"] = now
 
@@ -375,6 +381,7 @@ class CS2UpcomingPipeline(Pipeline[CS2UpcomingParams]):
             summary[v.name]["matched"] = sum(s is not None for s in states)
             summary[v.name]["tradable"] = sum(any(leg["venue"] == v.name for leg in json.loads(r["markets"]))
                                               for r in rows.values())
+            logger.info("%s: %s", v.name, summary[v.name])
 
         changed = {**rows, **settled}
         if not params.dry_run:
@@ -387,6 +394,9 @@ class CS2UpcomingPipeline(Pipeline[CS2UpcomingParams]):
                 publish(cs2.UPCOMING_BOOKS, books.assign(generated_at=now))
             if aliases is not None:
                 publish(cs2.TEAM_ALIASES, aliases)
+        logger.info("%s %d feature rows, %d match rows, %d books%s", "dry run, not publishing" if params.dry_run
+                    else "published", len(features), len(changed), len(books),
+                    "" if aliases is None else f", {len(aliases)} aliases")
         self._publish_run(params, now, True, sum(p is not None for p in pages.values()), credits, over_budget, len(rows))
 
         statuses = pd.Series([r["status"] for r in rows.values()]).value_counts().to_dict() if rows else {}
