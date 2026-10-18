@@ -28,7 +28,7 @@ const NAME = "gnome-pipelines";
 const MANIFEST_PATH = "/gnome/pipelines/types";
 // cdk/lambda/store.py reads runs by task through this index.
 const TASK_INDEX = "by-task";
-// trigger_pipeline.py overrides the container by this name.
+// tasks.py overrides the container by this name.
 const CONTAINER_NAME = "pipeline";
 // gnome_pipelines/families/: one image and task definition each. CI pushes <family>-<sha> and <family>-latest.
 const FAMILIES = ["cs2"];
@@ -141,7 +141,7 @@ export class RunStack extends cdk.Stack {
     });
     const taskDefinitions: { [family: string]: ecs.FargateTaskDefinition } = {};
     for (const family of FAMILIES) {
-      // The task size here is only a default: trigger_pipeline.py sizes each run from the pipeline's resources.
+      // The task size here is only a default: tasks.py sizes each run from the pipeline's resources.
       const taskDefinition = new ecs.FargateTaskDefinition(this, `TaskDefinition-${family}`, {
         family: `${NAME}-${family}`,
         cpu: 1024,
@@ -181,24 +181,30 @@ export class RunStack extends cdk.Stack {
       return f;
     };
 
+    // What tasks.py needs to start a run's task: the trigger starts runs, and the status Lambda restarts them.
+    const launchEnvironment = {
+      CLUSTER_ARN: cluster.clusterArn,
+      TASK_DEFINITIONS: cdk.Stack.of(this).toJsonString(
+        Object.fromEntries(Object.entries(taskDefinitions).map(([family, td]) => [family, td.taskDefinitionArn])),
+      ),
+      SUBNET_IDS: vpc.publicSubnets.map((s) => s.subnetId).join(","),
+      SECURITY_GROUP_ID: securityGroup.securityGroupId,
+    };
+    const grantLaunch = (f: lambda.Function) => {
+      f.addToRolePolicy(new iam.PolicyStatement({
+        actions: ["ecs:RunTask"],
+        resources: Object.values(taskDefinitions).map((td) => td.taskDefinitionArn),
+      }));
+      f.addToRolePolicy(new iam.PolicyStatement({
+        actions: ["iam:PassRole"],
+        resources: [taskRole.roleArn, executionRole.roleArn],
+      }));
+    };
+
     const triggerFn = fn("TriggerFunction", FUNCTION_NAMES.trigger, "trigger_pipeline",
-      "Start a pipeline run (scheduled, or manual through the API)", {
-        CLUSTER_ARN: cluster.clusterArn,
-        TASK_DEFINITIONS: cdk.Stack.of(this).toJsonString(
-          Object.fromEntries(Object.entries(taskDefinitions).map(([family, td]) => [family, td.taskDefinitionArn])),
-        ),
-        SUBNET_IDS: vpc.publicSubnets.map((s) => s.subnetId).join(","),
-        SECURITY_GROUP_ID: securityGroup.securityGroupId,
-      });
+      "Start a pipeline run (scheduled, or manual through the API)", launchEnvironment);
     table.grantReadWriteData(triggerFn);
-    triggerFn.addToRolePolicy(new iam.PolicyStatement({
-      actions: ["ecs:RunTask"],
-      resources: Object.values(taskDefinitions).map((td) => td.taskDefinitionArn),
-    }));
-    triggerFn.addToRolePolicy(new iam.PolicyStatement({
-      actions: ["iam:PassRole"],
-      resources: [taskRole.roleArn, executionRole.roleArn],
-    }));
+    grantLaunch(triggerFn);
 
     const scheduleGroup = new scheduler.CfnScheduleGroup(this, "ScheduleGroup", { name: NAME });
     const schedulerRole = new iam.Role(this, "SchedulerRole", {
@@ -259,8 +265,10 @@ export class RunStack extends cdk.Stack {
     syncFn.grantInvoke(githubRole);
 
     const statusFn = fn("StatusFunction", FUNCTION_NAMES.status, "pipeline_status",
-      "Fail runs whose task stopped abnormally and alert on failed runs");
+      "Restart runs whose task failed to start, fail runs whose task stopped abnormally, and alert on failed runs",
+      launchEnvironment);
     table.grantReadWriteData(statusFn);
+    grantLaunch(statusFn);
     statusFn.addToRolePolicy(new iam.PolicyStatement({
       actions: ["events:PutEvents"],
       resources: [`arn:aws:events:${this.region}:${this.account}:event-bus/${ALERT_BUS_NAME}`],
