@@ -9,7 +9,8 @@ through `gnomepy.data`; gnomepy-research holds the feature and model code these 
 | `gnome_pipelines/datasets/` | Table schemas (`TableSpec`), one module per domain. Readers don't need them: `load(name)` takes the key from the table. |
 | `gnome_pipelines/stores.py` | Stores stamped with the build's code version and the run id; every writer publishes through them. |
 | `gnome_pipelines/credentials.py` | `secret(name, env_var)`: the environment variable locally, else the `gnome/pipelines/<name>` secret |
-| `gnome_pipelines/hltv_cs2/` | The `hltv_cs2` pipeline: parsers (`scraper.py`), page sources (`fetch.py`: ZenRows, cache; `chrome.py`: local Chrome + demos), the collection loops (`collect.py`), page cache, demo parser, publishing |
+| `gnome_pipelines/hltv_cs2/` | The `hltv_cs2` pipeline: parsers (`scraper.py`; `roster.py` for team pages and the transfers feed), page sources (`fetch.py`: ZenRows, cache; `chrome.py`: local Chrome + demos), the collection loops (`collect.py`), page cache, demo parser, publishing |
+| `gnome_pipelines/hltv_rosters/` | `hltv_rosters`: every team's roster moves (joins, departures, benchings, loans, substitutes, coaches) and current roster, from HLTV team pages and the transfers feed |
 | `gnome_pipelines/cs2_prematch/` | `cs2_prematch_train`: the monthly pre-veto model refit |
 | `gnome_pipelines/cs2_upcoming/` | `cs2_upcoming`: every 15 min, upcoming BO3s from HLTV (kickoff, status, lineups, features), their listings and books on Polymarket International, Kalshi and Polymarket US, for gnome-launcher and the CS2 strategies |
 | `gnome_pipelines/cs2_round_model/` | Round win probability model training |
@@ -83,7 +84,15 @@ poetry run gnome-pipelines run cs2_prematch_train --stage local          # ~/.ca
 poetry run gnome-pipelines run hltv_cs2 --stage dev -p fetcher=chrome -p demos=true -p start_date=… -p end_date=…
 # Re-parse already-cached pages after a parser change: no network
 poetry run gnome-pipelines run hltv_cs2 --stage dev -p fetcher=cache -p start_date=… -p end_date=…
+
+# Every team's roster history (one team page each, resumable through the page cache), then daily updates
+poetry run gnome-pipelines run hltv_rosters --stage prod -p mode=backfill -p fetcher=chrome
+poetry run gnome-pipelines run hltv_rosters --stage prod -p mode=daily -p fetcher=chrome
 ```
+
+Team pages and the transfers feed show how things stand now, so the page cache keeps one copy of each per day
+rather than overwriting it. Roster moves are dated by HLTV; read `cs2_roster_moves` as of a time for the moves we
+had seen by then.
 
 It runs the same `execute()` as the Fargate task, which first validates the parameters against the
 pipeline's `PipelineParams` model (`class HltvCs2Pipeline(Pipeline[HltvCs2Params])`): `-p` values are

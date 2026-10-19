@@ -112,6 +112,26 @@ MATCH_VETO = TableSpec(
     key=("match_id", "order"),
 )
 
+# One row per player in a match's lineup box, which HLTV renders before the match (so it is point-in-time).
+# is_standin is HLTV's "Substitute" label: a player not on the team's registered roster.
+MATCH_LINEUPS = TableSpec(
+    "cs2_match_lineups",
+    pa.schema([
+        pa.field("match_id", pa.int64(), nullable=False),
+        pa.field("match_date", pa.timestamp("us")),
+        pa.field("team_id", pa.int64(), nullable=False),
+        pa.field("team_name", pa.string()),
+        pa.field("player_id", pa.int64(), nullable=False),
+        pa.field("player_name", pa.string()),
+        pa.field("slot", pa.int64()),
+        pa.field("is_standin", pa.bool_()),
+        pa.field("is_awp", pa.bool_()),
+        pa.field("is_igl", pa.bool_()),
+    ]),
+    key=("match_id", "team_id", "player_id"),
+    partition_by=("match_date", "month"),
+)
+
 H2H_HISTORY = TableSpec(
     "cs2_h2h_history",
     pa.schema([
@@ -189,6 +209,44 @@ ROUND_FEATURES = TableSpec(
     ]),
     key=("match_id", "map_name", "source_demo", "tick", "bomb_planted"),
     partition_by=("match_date", "month"),
+)
+
+# HLTV roster moves (hltv_rosters): one row per dated status transition of a player or coach between two sides,
+# e.g. Falcons(active) -> Falcons(benched), or Natus Vincere(benched) -> MOUZ(active) for a loan. Team 0 is
+# "No team". event_date is HLTV's date; read the table as of a time for the moves we had seen by then.
+ROSTER_MOVES = TableSpec(
+    "cs2_roster_moves",
+    pa.schema([
+        pa.field("event_date", pa.timestamp("us"), nullable=False),
+        pa.field("person_id", pa.int64(), nullable=False),
+        pa.field("person_name", pa.string()),
+        pa.field("person_role", pa.string()),
+        pa.field("kind", pa.string(), nullable=False),
+        pa.field("from_team_id", pa.int64(), nullable=False),
+        pa.field("from_team_name", pa.string()),
+        pa.field("from_status", pa.string()),
+        pa.field("to_team_id", pa.int64(), nullable=False),
+        pa.field("to_team_name", pa.string()),
+        pa.field("to_status", pa.string()),
+        pa.field("text", pa.string()),
+    ]),
+    key=("person_id", "event_date", "from_team_id", "to_team_id", "kind"),
+)
+
+# A team page's players table and coach as they stood on the day it was fetched (the page shows nothing older).
+TEAM_ROSTER_SNAPSHOTS = TableSpec(
+    "cs2_team_roster_snapshots",
+    pa.schema([
+        pa.field("snapshot_date", pa.timestamp("us"), nullable=False),
+        pa.field("team_id", pa.int64(), nullable=False),
+        pa.field("person_id", pa.int64(), nullable=False),
+        pa.field("person_name", pa.string()),
+        pa.field("role", pa.string(), nullable=False),
+        pa.field("status", pa.string()),
+        pa.field("time_on_team", pa.string()),
+        pa.field("maps_played", pa.int64()),
+    ]),
+    key=("team_id", "snapshot_date", "person_id", "role"),
 )
 
 TEAM_RANKINGS = TableSpec(
@@ -402,5 +460,5 @@ TEAM_ALIASES = TableSpec(
     key=("source", "source_name_norm", "hltv_team_id"),
 )
 
-ALL = (MATCH_HISTORY, PLAYER_MAP_STATS, MATCH_VETO, H2H_HISTORY, TEAM_RECENT_FORM, ROUND_FEATURES, TEAM_RANKINGS,
+ALL = (MATCH_HISTORY, PLAYER_MAP_STATS, MATCH_VETO, MATCH_LINEUPS, ROSTER_MOVES, TEAM_ROSTER_SNAPSHOTS, H2H_HISTORY, TEAM_RECENT_FORM, ROUND_FEATURES, TEAM_RANKINGS,
        MATCH_PRIORS, UPCOMING_MATCHES, UPCOMING_FEATURES, UPCOMING_RUNS, UPCOMING_BOOKS, TEAM_ALIASES)

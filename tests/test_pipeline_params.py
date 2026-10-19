@@ -16,6 +16,7 @@ PIPELINES = families.available()
 def test_every_pipeline_declares_its_params():
     assert {name: cls.params_type.__name__ for name, cls in PIPELINES.items()} == {
         "hltv_cs2": "HltvCs2Params",
+        "hltv_rosters": "HltvRostersParams",
         "cs2_prematch_train": "CS2PrematchTrainParams",
         "cs2_upcoming": "CS2UpcomingParams",
     }

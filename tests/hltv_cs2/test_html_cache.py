@@ -1,5 +1,6 @@
 import asyncio
 import gzip
+import re
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -191,3 +192,40 @@ def test_remote_read_failure_is_a_miss_not_a_crash(tmp_path, monkeypatch):
 
     monkeypatch.setattr(hc, "fs_read_bytes", _boom)
     assert cache.get(url, kind="match") is None, "an unreachable remote is a miss, not an exception"
+
+
+def test_a_team_page_keeps_one_copy_per_day_and_serves_the_newest(tmp_path):
+    """Team pages show the roster as of the fetch, so an older day's copy is history, not something to overwrite."""
+    c = HtmlCache(local_root=tmp_path / "l", remote_root=str(tmp_path / "r"), policy=CachePolicy(ttl=timedelta.max))
+    url = "https://www.hltv.org/team/9881/rooster"
+    monday = datetime(2026, 10, 12, 9, tzinfo=timezone.utc)
+    c.put(url, "<html>monday<footer></footer></html>", kind="team", fetched_at=monday)
+    c.put(url, "<html>tuesday<footer></footer></html>", kind="team", fetched_at=monday + timedelta(days=1))
+    c.drain()
+
+    keys = c.snapshot_keys(url, kind="team")
+    assert [k.rsplit("/", 1)[-1] for k in keys] == ["2026-10-12.html.gz", "2026-10-13.html.gz"]
+    assert "tuesday" in c.get("https://www.hltv.org/team/9881/x", kind="team").html
+
+
+def test_a_stale_team_page_is_a_miss_under_the_daily_ttl(cache):
+    url = "https://www.hltv.org/team/9881/x"
+    cache.put(url, "<html>old<footer></footer></html>", kind="team", fetched_at=datetime.now(timezone.utc) - timedelta(days=2))
+    assert cache.get(url, kind="team") is None
+
+
+def test_a_snapshot_page_found_only_remotely_is_served(tmp_path):
+    remote = str(tmp_path / "r")
+    writer = HtmlCache(local_root=tmp_path / "a", remote_root=remote)
+    url = "https://www.hltv.org/transfers?page=2"
+    writer.put(url, "<html>feed<footer></footer></html>", kind="transfers")
+    writer.drain()
+
+    reader = HtmlCache(local_root=tmp_path / "b", remote_root=remote)
+    assert "feed" in reader.get(url, kind="transfers").html
+
+
+def test_match_keys_carry_no_date(cache):
+    """A finished match page never changes, so it keeps its one undated key (and every key already stored)."""
+    key = cache.key_for("https://www.hltv.org/matches/2399544/x", kind="match")
+    assert key.endswith(".html.gz") and not re.search(r"/\d{4}-\d{2}-\d{2}\.html\.gz$", key)

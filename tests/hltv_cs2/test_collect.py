@@ -45,11 +45,11 @@ def collect_day(cache, source, **kwargs):
 def test_every_harvested_dataset_is_published(cache, published):
     summary = collect_day(cache, FixtureSource(PAGES))
 
-    rows, demos, players, veto, h2h, form = published["args"]
+    rows, demos, players, veto, h2h, form, lineups = published["args"]
     assert summary["matches"] == 3 and summary["maps"] == len(rows) > 0
     assert demos == []
     assert {r["match_id"] for r in rows} == set(PAGES)
-    for name, block in (("players", players), ("veto", veto), ("h2h", h2h), ("form", form)):
+    for name, block in (("players", players), ("veto", veto), ("h2h", h2h), ("form", form), ("lineups", lineups)):
         assert block, f"{name} rows were dropped"
         assert {r["match_id"] for r in block} <= set(PAGES)
 
