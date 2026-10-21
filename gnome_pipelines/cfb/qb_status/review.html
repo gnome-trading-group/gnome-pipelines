@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QB Review</title>
+<style>
+/* Layout: one column of claim cards, newest first, thumb-sized buttons for phone use. */
+:root {
+  --bg: #f4f6f8; --panel: #ffffff; --ink: #141820; --muted: #5d6675; --line: #dce1e8;
+  --accent: #2563a8; --ok: #1d7a4a; --bad: #b2362d; --warn: #a96b10;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1115; --panel: #161a20; --ink: #e6eaf0; --muted: #8b94a3; --line: #262c35;
+    --accent: #6aa8ff; --ok: #43c07f; --bad: #ff6f62; --warn: #e3a63c; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e1115; --panel: #161a20; --ink: #e6eaf0; --muted: #8b94a3; --line: #262c35;
+  --accent: #6aa8ff; --ok: #43c07f; --bad: #ff6f62; --warn: #e3a63c; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--sans); font-size: 15px; }
+body { padding: 16px; }
+main { max-width: 640px; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; }
+h1 { font-size: 18px; margin: 0; }
+.sub { color: var(--muted); font-size: 13px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 8px; }
+.who { font-weight: 650; font-size: 16px; }
+.claim { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.pill { font-size: 12px; border-radius: 999px; padding: 2px 9px; border: 1px solid var(--line); }
+.pill.status { border-color: var(--warn); color: var(--warn); font-weight: 600; }
+.meta { color: var(--muted); font-size: 12px; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.para { font-size: 14px; }
+a { color: var(--accent); }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; }
+button, select { font: inherit; border-radius: 8px; padding: 10px 14px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); min-height: 44px; }
+button { cursor: pointer; }
+button.confirm { border-color: var(--ok); color: var(--ok); font-weight: 600; }
+button.reject { border-color: var(--bad); color: var(--bad); }
+button:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.empty { color: var(--muted); padding: 24px 0; text-align: center; }
+.toast { min-height: 20px; color: var(--accent); font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>QB claims to review</h1>
+    <div class="sub">Claims the service wasn't sure about. Confirm to apply, reject to drop, or set the right status.</div>
+  </header>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <section id="list"><div class="empty">Loading...</div></section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+let STATUSES = [];
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const when = t => t ? new Date(t).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
+
+function card(it) {
+  const opts = STATUSES.map(s => `<option value="${s}" ${s === it.status ? 'selected' : ''}>${s.replaceAll('_', ' ')}</option>`).join('');
+  const link = it.url ? ` · <a href="${esc(it.url)}" target="_blank" rel="noopener noreferrer">source</a>` : '';
+  const who = it.player_raw || it.player_id || 'unknown player';
+  return `<article class="card" data-id="${esc(it.evidence_id)}">
+    <div class="who">${esc(who)} <span class="sub">${esc(it.team)}</span></div>
+    <div class="claim"><span class="pill status">${esc((it.status || '').replaceAll('_', ' '))}</span>
+      <span class="pill">${esc(it.hedge || '')}</span><span class="pill">${esc(it.source_type)} · ${esc(it.source_org)}</span>
+      ${it.report_slot ? `<span class="pill">${esc(it.report_slot)}</span>` : ''}</div>
+    ${it.paraphrase ? `<div class="para">${esc(it.paraphrase)}</div>` : ''}
+    <div class="meta">seen ${esc(when(it.first_seen_at))}${it.published_at ? ' · published ' + esc(when(it.published_at)) : ''}
+      · match ${it.match_confidence != null ? Number(it.match_confidence).toFixed(2) : '-'}${link}</div>
+    <div class="actions">
+      <button type="button" class="confirm" data-d="confirm">Confirm</button>
+      <button type="button" class="reject" data-d="reject">Reject</button>
+      <label class="sub" for="s-${esc(it.evidence_id)}" style="align-self:center">or set</label>
+      <select id="s-${esc(it.evidence_id)}">${opts}</select>
+      <button type="button" data-d="edit">Save status</button>
+    </div></article>`;
+}
+
+async function load() {
+  const r = await fetch('/pending');
+  const d = await r.json();
+  STATUSES = d.statuses;
+  $('list').innerHTML = d.items.length ? d.items.map(card).join('') : '<div class="empty">Nothing waiting for review.</div>';
+  $('list').querySelectorAll('button[data-d]').forEach(b => b.addEventListener('click', () => decide(b)));
+}
+
+async function decide(btn) {
+  const cardEl = btn.closest('.card'), id = cardEl.dataset.id, decision = btn.dataset.d;
+  const body = { evidence_id: id, decision };
+  if (decision === 'edit') body.status = cardEl.querySelector('select').value;
+  const r = await fetch('/decide', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const d = await r.json();
+  if (!r.ok) { $('toast').textContent = d.error || 'That didn\'t save; try again.'; return; }
+  $('toast').textContent = decision === 'reject' ? 'Rejected.' : 'Saved; the status updates on the next recompute.';
+  cardEl.remove();
+  if (!$('list').querySelector('.card')) $('list').innerHTML = '<div class="empty">Nothing waiting for review.</div>';
+}
+load();
+</script>
+</body>
+</html>
