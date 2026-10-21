@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import pandas as pd
 import pytest
 
-from gnome_pipelines.cfb.qb_status.candidates import candidates, game_starters, next_game
+from gnome_pipelines.cfb.qb_status.candidates import candidates, game_starters, next_game, with_roster_ids
 
 UTC = timezone.utc
 GAMES = pd.DataFrame([
@@ -61,3 +61,16 @@ def test_single_qb_gets_one():
 def test_next_game_skips_completed():
     assert next_game(344, datetime(2026, 10, 21, tzinfo=UTC), GAMES) == 4
     assert next_game(344, datetime(2026, 10, 30, tzinfo=UTC), GAMES) is None
+
+
+def test_with_roster_ids_maps_keys_and_keeps_unlinked():
+    class Index:
+        def player_for_key(self, team_id, key):
+            return {"b.rowe": "9000002"}.get(key)
+    cands = pd.DataFrame([{"player_id": "b.rowe", "passer_key": "b.rowe", "base": 0.8, "last_starter": True,
+                           "season_starter": False},
+                          {"player_id": "x.walkon", "passer_key": "x.walkon", "base": 0.2, "last_starter": False,
+                           "season_starter": True}])
+    out = with_roster_ids(cands, 344, Index())
+    assert out["player_id"].tolist() == ["9000002", "x.walkon"]
+    assert out["passer_key"].tolist() == ["b.rowe", "x.walkon"]

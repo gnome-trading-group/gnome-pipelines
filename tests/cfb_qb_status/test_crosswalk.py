@@ -21,7 +21,7 @@ ROSTERS = pd.DataFrame([
 ])
 
 PASSERS = pd.DataFrame([
-    {"season": 2026, "game_id": 1, "offense": "Mississippi State", "passer": "A.Stone", "passer_key": "9000001",
+    {"season": 2026, "game_id": 1, "offense": "Mississippi State", "passer": "A.Stone", "passer_key": "a.stone",
      "play_seq": 1},
 ])
 
@@ -57,13 +57,34 @@ def test_shared_surname_without_initial_is_ambiguous():
 
 
 def test_passer_key_joins_roster_player_id():
-    qbs = PlayerIndex(ROSTERS, PASSERS, 2026).qbs(344)
-    keys = dict(zip(qbs["player_id"], qbs["passer_key"]))
-    assert keys["9000001"] == "9000001"
+    index = PlayerIndex(ROSTERS, PASSERS, 2026)
+    keys = dict(zip(index.qbs(344)["player_id"], index.qbs(344)["passer_key"]))
+    assert keys["9000001"] == "a.stone"
     assert pd.isna(keys["9000002"])
+    assert index.player_for_key(344, "a.stone") == "9000001"
+    assert index.player_for_key(344, "b.rowe") == "9000002"
+    assert index.player_for_key(201, "j.smith") is None
 
 
 def test_players_frame_matches_spec():
     df = players_frame(PlayerIndex(ROSTERS, PASSERS, 2026))
     assert list(df.columns) == PLAYERS.schema.names
     assert "A. Stone" in df.loc[df.player_id == "9000001", "aliases"].iloc[0]
+
+
+SUFFIX_ROSTER = pd.DataFrame([
+    {"season": 2026, "player_id": "1", "first_name": "Devon", "last_name": "Marsh Jr.", "team": "Washington",
+     "position": "QB", "jersey": 2.0, "team_id": 264},
+    {"season": 2026, "player_id": "2", "first_name": "Danny", "last_name": "O'Rourke", "team": "Wisconsin",
+     "position": "QB", "jersey": 16.0, "team_id": 275},
+    {"season": 2026, "player_id": "3", "first_name": "Kody", "last_name": "Lane-Porter", "team": "Army",
+     "position": "QB", "jersey": 8.0, "team_id": 349},
+])
+
+
+def test_suffixes_and_punctuation_still_match():
+    index = PlayerIndex(SUFFIX_ROSTER, PASSERS, 2026)
+    assert index.match(264, "Devon Marsh Jr.", "#2").confidence == 1.0
+    assert index.match(264, "Devon Marsh", None).player_id == "1"
+    assert index.match(275, "Danny O'Rourke", "#16").player_id == "2"
+    assert index.match(349, "Kody Lane-Porter", None).player_id == "3"

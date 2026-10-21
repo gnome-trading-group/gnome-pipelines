@@ -111,3 +111,22 @@ def test_fetch_sends_the_documented_body():
     s = FakeSession(FakeResponse(200, payload(row())))
     assert fetch_conference(s, "B10")["data"]
     assert s.calls[0][1] == {"sport": "Football", "organization": "B10", "conference": "B10"}
+
+
+def test_past_game_that_cannot_be_found_is_skipped():
+    ev = run(payload(row(Week="Sat, 03 Oct 2026 00:00:00 GMT", WeekNum=5)), seen=datetime(2026, 10, 21, tzinfo=timezone.utc))
+    assert ev == []
+
+
+def test_mac_miami_means_miami_ohio():
+    games = pd.DataFrame([
+        {"game_id": 9, "season": 2026, "week": 8, "kickoff": pd.Timestamp("2026-10-24T19:00Z"),
+         "home_team": "Miami (OH)", "home_id": 193, "away_team": "Ohio", "away_id": 195},
+        {"game_id": 10, "season": 2026, "week": 8, "kickoff": pd.Timestamp("2026-10-24T19:00Z"),
+         "home_team": "Miami", "home_id": 2390, "away_team": "Pittsburgh", "away_id": 221}])
+    rosters = pd.DataFrame([{"season": 2026, "player_id": "55", "first_name": "Dorian", "last_name": "Pike",
+                             "team": "Miami (OH)", "position": "QB", "jersey": 3.0, "team_id": 193}])
+    r = row(Team="Miami", TeamDisplay="Miami", Player="Dorian Pike", Number="#3", Opponent="vs. Ohio",
+            OpponentDisplay="vs. Ohio", Week="Sat, 24 Oct 2026 00:00:00 GMT", WeekNum=8)
+    ev = report_evidence("MAC", payload(r), SEEN, TeamIndex(games), {2026: PlayerIndex(rosters, PASSERS, 2026)}, games)
+    assert ev and all(e.team_id == 193 and e.game_id == 9 and e.review_state == "auto" for e in ev)

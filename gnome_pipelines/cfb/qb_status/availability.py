@@ -10,7 +10,7 @@ from datetime import date, datetime, timedelta
 import pandas as pd
 import requests
 
-from gnome_pipelines.cfb.qb_status.crosswalk import MATCH_OK, PlayerIndex, TeamIndex, _split_name
+from gnome_pipelines.cfb.qb_status.crosswalk import MATCH_OK, PlayerIndex, TeamIndex, _split_name, norm_team
 from gnome_pipelines.cfb.qb_status.evidence import Evidence, evidence_id, parse_report_status
 
 FEED = "https://app.hdintelligence.com/api/get-archive-public"
@@ -19,8 +19,17 @@ HEADERS = {"Content-Type": "application/json", "Accept": "application/json", "Us
            "Origin": "https://app.hdintelligence.com"}
 
 
+# A conference's own feed sometimes uses a bare name another FBS school owns
+CONFERENCE_TEAM_ALIASES = {("MAC", "miami"): "Miami (OH)"}
+PAST_GRACE = timedelta(days=2)
+
+
 class FeedError(RuntimeError):
     pass
+
+
+def _team(teams: TeamIndex, conference: str, name: str, season: int) -> int | None:
+    return teams.team_id(CONFERENCE_TEAM_ALIASES.get((conference, norm_team(name)), name), season)
 
 
 def fetch_conference(session: requests.Session, conference: str) -> dict:
@@ -56,11 +65,12 @@ def _strip_venue(text: str) -> str:
     return t
 
 
-def find_game(games: pd.DataFrame, team_id: int, opponent_text: str, week_date: date, teams: TeamIndex) -> int | None:
+def find_game(games: pd.DataFrame, team_id: int, opponent_text: str, week_date: date, teams: TeamIndex,
+              conference: str = "") -> int | None:
     kick = pd.to_datetime(games["kickoff"], utc=True).dt.date
     near = games[((games["home_id"] == team_id) | (games["away_id"] == team_id))
                  & kick.between(week_date - timedelta(days=1), week_date + timedelta(days=1))]
-    opp = teams.team_id(_strip_venue(opponent_text), _season(week_date))
+    opp = _team(teams, conference, _strip_venue(opponent_text), _season(week_date))
     if opp is not None:
         near = near[(near["home_id"] == opp) | (near["away_id"] == opp)]
     return int(near["game_id"].iloc[0]) if len(near) == 1 else None
@@ -82,9 +92,9 @@ def report_evidence(conference: str, payload: dict, seen_at: datetime, teams: Te
             continue
         season = _season(wd)
         team_name = row.get("TeamDisplay") or row.get("Team") or ""
-        team_id = teams.team_id(team_name, season)
+        team_id = _team(teams, conference, team_name, season)
         if team_id is None and row.get("Team"):
-            team_id = teams.team_id(row["Team"], season)
+            team_id = _team(teams, conference, row["Team"], season)
         player_raw = (row.get("Player") or "").strip()
         jersey = (row.get("Number") or "").strip().lstrip("#") or None
         player_id, confidence = None, 0.0
@@ -101,8 +111,10 @@ def report_evidence(conference: str, payload: dict, seen_at: datetime, teams: Te
                 continue
             else:
                 player_id, confidence = m.player_id, m.confidence
-        game_id = find_game(games, team_id, row.get("OpponentDisplay") or row.get("Opponent", ""), wd, teams) \
-            if team_id is not None else None
+        game_id = find_game(games, team_id, row.get("OpponentDisplay") or row.get("Opponent", ""), wd, teams,
+                            conference) if team_id is not None else None
+        if team_id is not None and game_id is None and wd < seen_at.date() - PAST_GRACE:
+            continue
         sure = team_id is not None and game_id is not None and player_id is not None and confidence >= MATCH_OK
         for slot in slots:
             status = parse_report_status(row.get(slot))

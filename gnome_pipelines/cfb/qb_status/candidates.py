@@ -1,7 +1,8 @@
 """Candidate quarterbacks for a team's next game, and their base weights before any news.
 
 Only games that kicked off at least 24 hours before as_of count, because play-by-play lands a day after kickoff; that
-keeps the candidates point-in-time. The player id is the play-by-play passer key, which equals the roster player id.
+keeps the candidates point-in-time. candidates() works in play-by-play passer keys (first initial + "." + surname);
+with_roster_ids() then swaps in roster player ids, so candidates line up with report and news evidence.
 """
 from __future__ import annotations
 
@@ -42,6 +43,13 @@ def candidates(team: str, team_id: int, season: int, as_of: datetime, passers: p
     out["last_starter"] = out["player_id"] == str(last)
     out["season_starter"] = out["player_id"] == str(season_starter)
     return out[COLUMNS]
+
+
+def with_roster_ids(cands: pd.DataFrame, team_id: int, index) -> pd.DataFrame:
+    """Replace passer keys with roster player ids where the roster links them; unlinked keys stay as they are."""
+    out = cands.copy()
+    out["player_id"] = [index.player_for_key(team_id, k) or k for k in out["passer_key"]]
+    return out
 
 
 def next_game(team_id: int, as_of: datetime, games: pd.DataFrame) -> int | None:

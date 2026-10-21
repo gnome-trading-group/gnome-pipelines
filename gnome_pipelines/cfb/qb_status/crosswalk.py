@@ -10,6 +10,7 @@ import unicodedata
 from dataclasses import dataclass
 
 import pandas as pd
+from gnomepy_research.models.cfb.features.qb import roster_keys
 
 from gnome_pipelines.datasets.qb_status import PLAYERS
 
@@ -67,16 +68,31 @@ def _jersey(value) -> str | None:
     return s or None
 
 
+SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v"}
+
+
+def _compact(text: str) -> str:
+    return re.sub(r"[^a-z]", "", _fold(str(text)).lower())
+
+
+def _surname(last: str) -> str:
+    tokens = [t for t in _fold(str(last)).lower().replace(",", " ").split()]
+    while len(tokens) > 1 and tokens[-1].strip(".") in SUFFIXES:
+        tokens = tokens[:-1]
+    return _compact("".join(tokens))
+
+
 def _split_name(name: str) -> tuple[str | None, str]:
-    parts = _norm_name(name.replace(".", ". ")).split()
-    if not parts:
+    """(first name or initial, surname compacted: lowercase letters only, suffixes dropped)."""
+    tokens = _fold(str(name)).lower().replace(".", ". ").replace(",", " ").split()
+    while len(tokens) > 1 and tokens[-1].strip(".") in SUFFIXES:
+        tokens = tokens[:-1]
+    tokens = [t for t in tokens if _compact(t)]
+    if not tokens:
         return None, ""
-    if len(parts) == 1:
-        return None, parts[0]
-    suffixes = {"jr", "sr", "ii", "iii", "iv"}
-    while len(parts) > 2 and parts[-1] in suffixes:
-        parts = parts[:-1]
-    return parts[0], parts[-1]
+    if len(tokens) == 1:
+        return None, _compact(tokens[0])
+    return _compact(tokens[0]), _compact("".join(tokens[1:]))
 
 
 class PlayerIndex:
@@ -85,25 +101,36 @@ class PlayerIndex:
         r = rosters[rosters["season"] == self.season].copy()
         r["jersey_s"] = r["jersey"].map(_jersey)
         r["first_n"] = r["first_name"].map(lambda s: _norm_name(s) if pd.notna(s) else "")
-        r["last_n"] = r["last_name"].map(lambda s: _norm_name(s) if pd.notna(s) else "")
+        r["last_n"] = r["last_name"].map(lambda s: _surname(s) if pd.notna(s) else "")
         self.rosters = r
         p = passers[passers["season"] == self.season] if "season" in passers else passers
         self.passer_keys = set(p["passer_key"].dropna().astype(str))
+        keyed = r.dropna(subset=["team_id"])
+        keys = roster_keys(keyed) if len(keyed) else pd.DataFrame(columns=["team_id", "passer_key", "player_id"])
+        self._by_key = {(int(t), k): str(pid) for t, k, pid in keys[["team_id", "passer_key", "player_id"]].itertuples(
+            index=False)}
+        self._key_of = {(t, pid): k for (t, k), pid in self._by_key.items()}
+
+    def player_for_key(self, team_id: int, passer_key: str) -> str | None:
+        """The roster player id behind a play-by-play passer key (first initial + "." + surname), or None."""
+        return self._by_key.get((int(team_id), str(passer_key)))
 
     def match(self, team_id: int, name: str, jersey: str | None) -> Match:
         team = self.rosters[self.rosters["team_id"] == team_id]
         first, last = _split_name(name)
+        last_token = _compact(name.replace(".", " ").split()[-1]) if name.split() else ""
         num = _jersey(jersey)
         scores: dict[str, float] = {}
         for row in team.itertuples(index=False):
             s = 0.0
-            if num is not None and row.jersey_s == num and row.last_n == last:
+            same_last = bool(last) and (row.last_n == last or row.last_n == last_token)
+            if num is not None and row.jersey_s == num and same_last:
                 s = 1.0
-            elif first and row.last_n == last and row.first_n[:1] == first[:1]:
+            elif first and same_last and row.first_n[:1] == first[:1]:
                 s = 0.9
             elif num is not None and row.jersey_s == num:
                 s = 0.6
-            elif not first and num is None and row.last_n == last:
+            elif not first and num is None and same_last:
                 s = 0.7
             if s:
                 scores[str(row.player_id)] = max(s, scores.get(str(row.player_id), 0.0))
@@ -117,10 +144,12 @@ class PlayerIndex:
 
     def qbs(self, team_id: int) -> pd.DataFrame:
         team = self.rosters[self.rosters["team_id"] == team_id]
-        keep = team[(team["position"] == "QB") | team["player_id"].astype(str).isin(self.passer_keys)].copy()
+        key = team["player_id"].astype(str).map(lambda pid: self._key_of.get((int(team_id), pid)))
+        threw = key.isin(self.passer_keys)
+        keep = team[(team["position"] == "QB") | threw].copy()
         keep["player_id"] = keep["player_id"].astype(str)
         keep["name"] = (keep["first_name"].fillna("") + " " + keep["last_name"].fillna("")).str.strip()
-        keep["passer_key"] = keep["player_id"].where(keep["player_id"].isin(self.passer_keys))
+        keep["passer_key"] = key[keep.index].where(threw[keep.index])
         return keep[["player_id", "name", "jersey_s", "passer_key"]].rename(columns={"jersey_s": "jersey"}).reset_index(
             drop=True)
 

@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  QB Status Service, laptop phase. Template only: replace REPO with the checkout path, then (with the user's OK)
+    cp com.gnome.qb-status.plist ~/Library/LaunchAgents/ && launchctl load ~/Library/LaunchAgents/com.gnome.qb-status.plist
+  KeepAlive restarts it after a crash; RunAtLoad starts it at login. No secrets belong in this file: X_BEARER_TOKEN and
+  ANTHROPIC_API_KEY, when they exist, come from Secrets Manager or the user's own environment.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.gnome.qb-status</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>-lc</string>
+    <string>cd REPO &amp;&amp; exec poetry run python -m gnome_pipelines.cfb.qb_status.service</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>AWS_PROFILE</key>
+    <string>AWSAdministratorAccess-241533121172</string>
+    <key>AWS_DEFAULT_REGION</key>
+    <string>us-east-1</string>
+  </dict>
+  <key>KeepAlive</key>
+  <true/>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+  <key>StandardOutPath</key>
+  <string>/tmp/qb-status.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/qb-status.err.log</string>
+</dict>
+</plist>
