@@ -8,12 +8,7 @@ from bs4 import BeautifulSoup
 
 from gnomepy_research.models.cs2.hltv import context_features as cf
 from gnomepy_research.models.cs2.hltv.pit import assert_pit_consistent
-from gnomepy_research.models.cs2.hltv.player_form import (
-    PLAYERS_AUX,
-    PlayerFormAccumulator,
-    compute_player_form_features,
-    PLAYER_FORM_FEATURES,
-)
+from gnomepy_research.models.cs2.hltv.player_skill import PLAYER_SKILL_FEATURES, compute_player_skill_features
 from gnome_pipelines.hltv_cs2.scraper import parse_match_detail_html
 from gnomepy_research.models.cs2.win_probability.symmetry import build_swap_plan, swap_features
 
@@ -62,21 +57,21 @@ def _synthetic_history(n_days=8, per_day=2, maps=3):
                     "team_b_score": 9,
                     "team_a_lineup_ids": [mid % 5 * 10 + i for i in range(5)],
                     "team_b_lineup_ids": [(mid + 2) % 5 * 10 + i for i in range(5)],
+                    "team_a_player_ids": [mid % 5 * 10 + i for i in range(5)],
+                    "team_b_player_ids": [(mid + 2) % 5 * 10 + i for i in range(5)],
                 })
     return pd.DataFrame(rows)
 
 
-def _synthetic_players(hist):
+def _synthetic_lineups(hist):
+    """cs2_match_lineups rows for every series, with team A's last player a stand-in every third match."""
     rows = []
-    for r in hist.itertuples():
-        for side in ("all", "ct", "t"):
-            for i, pid in enumerate(r.team_a_lineup_ids + r.team_b_lineup_ids):
-                rows.append({
-                    "match_id": r.match_id, "map_name": r.map_name, "side": side,
-                    "player_id": pid, "rating": 1.0 + (pid % 7) / 20, "adr": 70 + i,
-                    "eadr": 70.0, "kast": 70.0, "ekast": 68.0, "kills": 18, "ek": 17.0,
-                    "deaths": 16, "ed": 17.0, "round_swing_pct": (pid % 5) - 2.0,
-                })
+    for r in hist.drop_duplicates("match_id").itertuples():
+        for side, team in (("a", r.team_a_id), ("b", r.team_b_id)):
+            ids = getattr(r, f"team_{side}_lineup_ids")
+            for slot, pid in enumerate(ids):
+                rows.append({"match_id": r.match_id, "team_id": team, "player_id": pid, "slot": slot,
+                             "is_standin": side == "a" and slot == 4 and r.match_id % 3 == 0})
     return pd.DataFrame(rows)
 
 
@@ -86,7 +81,6 @@ def test_every_block_is_keyed_one_row_per_map(parsed):
     hist, veto, h2h = parsed["rows"], parsed["veto"], parsed["h2h"]
     blocks = {
         "schedule": cf.compute_schedule_features(hist),
-        "rank": cf.compute_rank_features(hist),
         "event": cf.compute_event_features(hist),
         "veto": cf.compute_veto_features(hist, veto),
         "page_h2h": cf.compute_page_h2h_features(hist, h2h),
@@ -101,7 +95,6 @@ def test_declared_feature_lists_match_what_is_emitted(parsed):
     hist, veto, h2h = parsed["rows"], parsed["veto"], parsed["h2h"]
     for df, declared in (
         (cf.compute_schedule_features(hist), cf.SCHEDULE_FEATURES),
-        (cf.compute_rank_features(hist), cf.RANK_FEATURES),
         (cf.compute_event_features(hist), cf.EVENT_FEATURES),
         (cf.compute_veto_features(hist, veto), cf.VETO_FEATURES),
         (cf.compute_page_h2h_features(hist, h2h), cf.PAGE_H2H_FEATURES),
@@ -116,33 +109,15 @@ def test_schedule_accumulator_is_point_in_time():
     assert_pit_consistent(_synthetic_history(), cf.ScheduleAccumulator, sample=4)
 
 
-def test_player_form_accumulator_is_point_in_time():
+def test_player_skill_is_frozen_within_a_series():
     hist = _synthetic_history()
-    assert_pit_consistent(
-        hist, PlayerFormAccumulator,
-        aux={PLAYERS_AUX: _synthetic_players(hist)},
-        outcome_aux=(PLAYERS_AUX,), sample=4,
-    )
+    out = compute_player_skill_features(hist, lineups=_synthetic_lineups(hist))
+    assert (out.groupby("match_id")[PLAYER_SKILL_FEATURES].nunique() <= 1).all().all()
 
 
-def test_form_is_frozen_within_a_series():
-    hist = _synthetic_history()
-    out = compute_player_form_features(hist, _synthetic_players(hist))
-    cols = [c for c in out.columns if c.startswith("team_a_form")]
-    assert (out.groupby("match_id")[cols].nunique() <= 1).all().all()
-
-
-def test_first_day_has_no_form():
-    hist = _synthetic_history()
-    out = compute_player_form_features(hist, _synthetic_players(hist)).merge(
-        hist[["match_id", "map_name", "match_date"]], on=["match_id", "map_name"])
-    first = out[out.match_date == hist.match_date.min()]
-    assert first["team_a_form_rating"].isna().all()
-
-
-def test_form_requires_announced_lineups():
+def test_player_skill_requires_announced_lineups():
     hist = _synthetic_history().drop(columns=["team_a_lineup_ids", "team_b_lineup_ids"])
-    out = compute_player_form_features(hist, pd.DataFrame())
+    out = compute_player_skill_features(hist)
     assert out.empty, "post-match player lists must not be used as a fallback"
 
 
@@ -202,14 +177,6 @@ def test_veto_is_symmetric_across_the_two_teams(parsed):
     assert "team_b_bans_before_pick" in out.columns
 
 
-def test_rank_union_is_at_least_as_dense_as_either_source(parsed):
-    hist = parsed["rows"]
-    out = cf.compute_rank_features(hist)
-    union = out["team_a_rank_best"].notna().mean()
-    assert union >= pd.to_numeric(hist["team_a_rank"], errors="coerce").notna().mean()
-    assert union >= pd.to_numeric(hist["team_a_vrs_rank"], errors="coerce").notna().mean()
-
-
 def test_rest_days_are_nonnegative_and_grow_with_gaps():
     hist = _synthetic_history()
     out = cf.compute_schedule_features(hist).merge(
@@ -229,14 +196,14 @@ def test_own_h2h_rate_is_a_share_of_prior_meetings():
 # --- symmetry ---------------------------------------------------------------
 
 def test_new_features_all_have_a_mirror():
-    names = (PLAYER_FORM_FEATURES + cf.SCHEDULE_FEATURES + cf.RANK_FEATURES
+    names = (PLAYER_SKILL_FEATURES + cf.SCHEDULE_FEATURES
              + cf.EVENT_FEATURES + cf.VETO_FEATURES + cf.PAGE_H2H_FEATURES)
     plan = build_swap_plan(names)
     assert len(plan.names) == len(names)
 
 
 def test_swapping_twice_is_the_identity():
-    names = (PLAYER_FORM_FEATURES + cf.SCHEDULE_FEATURES + cf.RANK_FEATURES
+    names = (PLAYER_SKILL_FEATURES + cf.SCHEDULE_FEATURES
              + cf.EVENT_FEATURES + cf.VETO_FEATURES + cf.PAGE_H2H_FEATURES)
     plan = build_swap_plan(names)
     rng = np.random.default_rng(0)

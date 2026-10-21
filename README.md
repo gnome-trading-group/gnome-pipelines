@@ -12,13 +12,14 @@ through `gnomepy.data`; gnomepy-research holds the feature and model code these 
 | `gnome_pipelines/hltv_cs2/` | The `hltv_cs2` pipeline: parsers (`scraper.py`; `roster.py` for team pages and the transfers feed), page sources (`fetch.py`: ZenRows, cache; `chrome.py`: local Chrome + demos), the collection loops (`collect.py`), page cache, demo parser, publishing |
 | `gnome_pipelines/hltv_rosters/` | `hltv_rosters`: every team's roster moves (joins, departures, benchings, loans, substitutes, coaches) and current roster, from HLTV team pages and the transfers feed |
 | `gnome_pipelines/cs2_prematch/` | `cs2_prematch_train`: the monthly pre-veto model refit |
+| `gnome_pipelines/cs2_bayes/` | `cs2_bayes_fit`: the weekly Bayesian series posterior the cs2_series sessions blend with the pre-veto model (not published unless it converged); `cs2_bayes_blend`: publishes the blend weights from a research walk-forward |
 | `gnome_pipelines/cs2_upcoming/` | `cs2_upcoming`: every 15 min, upcoming BO3s from HLTV (kickoff, status, lineups, features), their listings and books on Polymarket International, Kalshi and Polymarket US, for gnome-launcher and the CS2 strategies |
 | `gnome_pipelines/cs2_round_model/` | Round win probability model training |
 | `gnome_pipelines/cfb/` | CFBD ingestion, quality checks, feature snapshots, team-week posteriors |
 | `gnome_pipelines/__init__.py` | `Pipeline[Params]`: what a pipeline declares (parameters, description, `Resources`, `Schedule`s) |
 | `gnome_pipelines/families/` | Pipeline families: each module lists the pipelines that share one image (`PIPELINES`) |
 | `gnome_pipelines/manifest.py` | Those declarations as JSON, published to SSM by CI per family for the API and the scheduler |
-| `gnome_pipelines/cli.py` | `gnome-pipelines run <pipeline> --stage local\|dev\|prod`: any pipeline on your machine |
+| `gnome_pipelines/cli.py` | `gnome-pipelines run <pipeline> --stage local\|dev\|prod`: any pipeline on your machine; `gnome-pipelines sync-schema <tables> --stage …`: bring tables in line with changed specs (dry run unless `--apply`) |
 | `gnome_pipelines/environment.py` | `environment()`: the run's stage (`local`/`dev`/`prod`) and whether it's in a Fargate task |
 | `gnome_pipelines/runner.py` | Fargate entry point the trigger Lambda starts (`PIPELINE_NAME`, `RUN_ID`, `PIPELINE_PARAMS`); records the run's status |
 | `Dockerfile`, `.github/workflows/build-image.yml` | One `gnome-pipelines:<family>-<sha>` image per family: every push to main goes to dev ECR, then to prod once approved on the `prod` GitHub environment |
@@ -79,6 +80,7 @@ poetry run gnome-pipelines run hltv_cs2 --stage dev -p days_back=3 -p min_stars=
 poetry run gnome-pipelines run cs2_upcoming --stage prod --params '{"dry_run": true}'
 poetry run gnome-pipelines run cs2_upcoming --stage prod -p dry_run=true -p fetcher=chrome   # no ZenRows credits
 poetry run gnome-pipelines run cs2_prematch_train --stage local          # ~/.cache/gnome-pipelines/warehouse
+poetry run gnome-pipelines sync-schema cs2_upcoming_features --stage dev --drop-removed   # the plan; add --apply to make it
 
 # HLTV through a visible Chrome window instead of ZenRows, with demos for the round features
 poetry run gnome-pipelines run hltv_cs2 --stage dev -p fetcher=chrome -p demos=true -p start_date=… -p end_date=…

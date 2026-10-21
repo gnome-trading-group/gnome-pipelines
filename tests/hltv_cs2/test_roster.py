@@ -120,6 +120,16 @@ def test_the_lineup_box_marks_stand_ins_and_names_each_boxs_team():
     assert {r["team_name"] for r in lineups} == {"FlyQuest", "Rooster"}
 
 
+def test_the_lineup_box_gives_every_players_nationality_and_the_header_each_teams_flag():
+    parsed = parse_match_detail_html(page("hltv_match_standins"), 2399544)
+    countries = {r["player_name"]: r["country"] for r in parsed["lineups"]}
+    assert all(countries.values())
+    assert countries["nettik"] == countries["chelleos"] == "New Zealand"
+    assert countries["jks"] == "Australia"
+    row = parsed["rows"][0]
+    assert (row["team_a_country"], row["team_b_country"]) == ("Australia", "Australia")
+
+
 def test_the_transfers_feed_is_newest_first_and_links_the_next_page():
     parsed = parse_transfers_page_html(page("hltv_transfers"), 0)
 

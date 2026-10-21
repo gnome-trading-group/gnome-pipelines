@@ -76,6 +76,17 @@ def test_veto_is_unknown_before_the_match_and_known_once_live():
     assert pre["h2h"] and pre["recent_form"]
 
 
+def test_upcoming_match_carries_its_lineup_rows():
+    """Stand-in flags feed player skill before kickoff, so the page's lineup box must come through as rows."""
+    up = parse_upcoming_match_html(_soup("hltv_upcoming_bo3"), 2398739)
+    rows = up["lineups"]
+    assert len(rows) == 10 and {r["match_id"] for r in rows} == {2398739}
+    assert [r["player_id"] for r in rows[:5]] == up["match"]["team_a_lineup_ids"]
+    assert all(isinstance(r["is_standin"], bool) for r in rows)
+    assert [r["country"] for r in rows[:3]] == ["United Kingdom", "France", "Estonia"]
+    assert (up["match"]["team_a_country"], up["match"]["team_b_country"]) == ("Europe", "Europe")
+
+
 def test_tbd_match_is_not_priced():
     assert parse_upcoming_match_html(_soup("hltv_upcoming_tbd"), 2398396) is None
 

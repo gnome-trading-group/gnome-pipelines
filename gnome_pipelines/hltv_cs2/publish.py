@@ -66,11 +66,12 @@ def publish_match_data(match_rows: list[dict], demo_rows: list[dict], player_row
 def publish_priors() -> int:
     """Rebuild cs2_match_priors from everything published so far; returns the row count."""
     ds = dataset_store()
-    # The harvested blocks (player form, veto, page H2H) need their datasets; without
-    # them build_priors still runs but publishes those features blank.
+    # The harvested blocks (player skill's stand-ins, roster, veto, page H2H) need their datasets;
+    # without them build_priors still runs but publishes those features blank.
     priors = build_priors(
         ds.load(cs2.MATCH_HISTORY.name), ds.load(cs2.TEAM_RANKINGS.name),
-        player_stats=ds.load(cs2.PLAYER_MAP_STATS.name),
+        lineups=ds.load(cs2.MATCH_LINEUPS.name),
+        roster_moves=ds.load(cs2.ROSTER_MOVES.name),
         veto=ds.load(cs2.MATCH_VETO.name),
         h2h=ds.load(cs2.H2H_HISTORY.name),
     )

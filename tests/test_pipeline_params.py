@@ -19,6 +19,8 @@ def test_every_pipeline_declares_its_params():
         "hltv_rosters": "HltvRostersParams",
         "cs2_prematch_train": "CS2PrematchTrainParams",
         "cs2_upcoming": "CS2UpcomingParams",
+        "cs2_bayes_fit": "CS2BayesFitParams",
+        "cs2_bayes_blend": "CS2BayesBlendParams",
     }
 
 
@@ -67,7 +69,8 @@ def test_chrome_is_refused_inside_a_fargate_task(monkeypatch):
 
 # Fargate's valid cpu → memory (MiB) combinations up to 4 vCPU.
 FARGATE = {256: range(512, 2049, 512), 512: range(1024, 4097, 1024), 1024: range(2048, 8193, 1024),
-           2048: range(4096, 16385, 1024), 4096: range(8192, 30721, 1024)}
+           2048: range(4096, 16385, 1024), 4096: range(8192, 30721, 1024), 8192: range(16384, 61441, 4096),
+           16384: range(32768, 122881, 8192)}
 
 
 @pytest.mark.parametrize("name", sorted(PIPELINES))

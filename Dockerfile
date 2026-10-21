@@ -31,6 +31,11 @@ ENV PYTHONUNBUFFERED=1 \
     PIPELINE_FAMILY=${FAMILY} \
     GNOME_CODE_VERSION=gnome-pipelines@${GIT_SHA}
 
+# g++: pytensor (pymc) compiles its graph to C and falls back to slow pure-Python ops without a compiler. Only the
+# families whose extra brings pymc need it.
+RUN case "$FAMILY" in cs2|cfb) apt-get update && apt-get install -y --no-install-recommends g++ \
+        && rm -rf /var/lib/apt/lists/* ;; esac
+
 COPY --from=build /venv /venv
 WORKDIR /app
 COPY gnome_pipelines gnome_pipelines/

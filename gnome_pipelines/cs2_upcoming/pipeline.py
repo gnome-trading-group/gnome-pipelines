@@ -245,9 +245,12 @@ def feature_rows(parsed: list[dict], ds: DatasetStore) -> pd.DataFrame:
                              "team_b_series_score": 0, "is_decider": 0.0} for p in parsed])
     targets["match_date"] = pd.to_datetime(targets.match_date)
     page_h2h = pd.DataFrame([r for p in parsed for r in p["h2h"]])
+    page_lineups = pd.DataFrame([r for p in parsed for r in p["lineups"]])
     priors = build_priors_for(
         ds.load(cs2.MATCH_HISTORY.name), ds.load(cs2.TEAM_RANKINGS.name), targets,
-        player_stats=ds.load(cs2.PLAYER_MAP_STATS.name), veto=ds.load(cs2.MATCH_VETO.name),
+        lineups=pd.concat([ds.load(cs2.MATCH_LINEUPS.name), page_lineups], ignore_index=True),
+        roster_moves=ds.load(cs2.ROSTER_MOVES.name),
+        veto=ds.load(cs2.MATCH_VETO.name),
         h2h=pd.concat([ds.load(cs2.H2H_HISTORY.name), page_h2h], ignore_index=True),
     )
     if priors.empty:

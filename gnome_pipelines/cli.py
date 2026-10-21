@@ -4,6 +4,7 @@
     gnome-pipelines describe hltv_cs2
     gnome-pipelines run hltv_cs2 --stage dev -p start_date=2026-10-11 -p end_date=2026-10-13 -p min_stars=0
     gnome-pipelines run cs2_upcoming --stage prod --params '{"dry_run": true}'
+    gnome-pipelines sync-schema cs2_match_priors --stage dev --recreate cs2_match_priors --apply
 
 --stage picks the data and the credentials together: dev and prod use the AWS profile of that name, and local
 writes to a SQLite warehouse on disk. A local run records no run item; its outputs are printed instead.
@@ -18,10 +19,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import click
+from gnomepy.data import CatalogConfig, DatasetStore
+from gnomepy.data.catalog import open_catalog
 from pydantic import ValidationError
 from pydantic_core import PydanticUndefined
 
-from gnome_pipelines import families
+from gnome_pipelines import families, schema_sync
+from gnome_pipelines.datasets import cfb, cs2
 from gnome_pipelines.environment import Stage
 from gnome_pipelines.runner import execute
 
@@ -84,6 +88,44 @@ def run(pipeline: str, stage: str, param_pairs: tuple[str, ...], params_json: st
                  os.environ["GNOME_CODE_VERSION"], params)
     result = execute(pipeline, params)
     click.echo(json.dumps(result.outputs, indent=2, default=str))
+
+
+@main.command(name="sync-schema")
+@click.argument("tables", nargs=-1, required=True)
+@click.option("--stage", required=True, type=click.Choice([s.value for s in Stage]), help="whose tables: local, dev or prod")
+@click.option("--drop-removed", is_flag=True, help="delete columns the spec no longer has (keeps every row)")
+@click.option("--recreate", multiple=True, metavar="TABLE",
+              help="drop and recreate this table empty, for one its writer rebuilds wholly (repeatable)")
+@click.option("--apply", "do_apply", is_flag=True, help="make the changes; without it only the plan is printed")
+@click.option("--warehouse", type=click.Path(path_type=Path), default=DEFAULT_WAREHOUSE, show_default=True,
+              help="the warehouse for --stage local")
+@click.option("--yes", is_flag=True, help="don't ask before changing prod")
+def sync_schema(tables: tuple[str, ...], stage: str, drop_removed: bool, recreate: tuple[str, ...], do_apply: bool,
+                warehouse: Path, yes: bool) -> None:
+    """Bring TABLES in line with their specs: add new columns; delete dropped ones or recreate, only when asked."""
+    specs = {spec.name: spec for spec in (*cs2.ALL, *cfb.ALL)}
+    unknown = [t for t in (*tables, *recreate) if t not in specs]
+    if unknown:
+        raise click.BadParameter(f"no dataset spec named {', '.join(unknown)}", param_hint="TABLES")
+    stage = Stage(stage)
+    os.environ.update(_run_environment(stage, warehouse))
+    config = CatalogConfig.from_env()
+    catalog, store = open_catalog(config), DatasetStore(config)
+    plans = [schema_sync.plan(catalog, config.namespace, specs[t]) for t in tables]
+    for p in plans:
+        action = "missing - create" if p.missing else "in sync" if p.in_sync else \
+            f"add {list(p.added)}, spec dropped {list(p.removed)}" + (" - recreate" if p.name in recreate else "")
+        click.echo(f"{p.name}: {action}")
+    if not do_apply or all(p.in_sync and p.name not in recreate for p in plans):
+        return
+    if stage is Stage.PROD and not yes:
+        click.confirm("Apply these schema changes to prod?", abort=True)
+    for p in plans:
+        if p.in_sync and p.name not in recreate:
+            continue
+        done = schema_sync.apply(store, catalog, config.namespace, specs[p.name], p,
+                                 drop_removed=drop_removed, recreate=p.name in recreate)
+        click.echo(f"{p.name}: {done}")
 
 
 def _pipeline(name: str):
