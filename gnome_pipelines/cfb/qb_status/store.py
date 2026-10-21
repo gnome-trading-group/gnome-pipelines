@@ -11,8 +11,10 @@ from pathlib import Path
 
 import pandas as pd
 from gnomepy.data import CatalogConfig, DatasetStore
+from pyiceberg.exceptions import NoSuchTableError
+from pyiceberg.expressions import EqualTo
 
-from gnome_pipelines.cfb.qb_status.evidence import Evidence, evidence_frame
+from gnome_pipelines.cfb.qb_status.evidence import Evidence, evidence_frame, evidence_id
 from gnome_pipelines.datasets.qb_status import EVIDENCE, HEALTH, PLAYERS, REPORT_SCHEDULE, SNAPSHOTS, WATCHES
 
 DEFAULT_WAREHOUSE = Path.home() / ".cache" / "gnome-pipelines" / "qb_status_warehouse"
@@ -28,42 +30,122 @@ def open_store(prod: bool = False) -> DatasetStore:
 
 
 def _load(store: DatasetStore, spec, as_of: datetime | None = None) -> pd.DataFrame:
+    """A missing table is empty; any other failure is raised, because treating it as empty would re-publish known
+    evidence with a later first_seen_at and lose the true first sighting."""
     try:
         return store.load(spec.name, as_of=as_of)
-    except Exception:
+    except NoSuchTableError:
         return pd.DataFrame(columns=spec.schema.names)
+
+
+def _plain(v):
+    if v is None or (not isinstance(v, (list, dict)) and pd.isna(v)):
+        return None
+    if isinstance(v, pd.Timestamp):
+        return v.to_pydatetime()
+    return v.item() if hasattr(v, "item") else v
+
+
+def _to_evidence(row: dict) -> Evidence:
+    values = {k: _plain(row.get(k)) for k in EVIDENCE.schema.names}
+    for k in ("game_id", "team_id", "week", "season"):
+        if values[k] is not None:
+            values[k] = int(values[k])
+    values["backfilled"] = bool(values["backfilled"])
+    return Evidence(**values)
 
 
 class StatusStore:
     def __init__(self, store: DatasetStore) -> None:
         self.store = store
-        self._ids: set[str] | None = None
-        self._snapshots: dict[tuple, tuple] = {}
+        self._evidence: pd.DataFrame | None = None
+        self._ids: set[str] = set()
+        self._latest_official: dict[str, str] = {}
+        self._snapshots: dict[tuple, tuple] | None = None
+        self._keys: dict[tuple, set] = {}
+
+    def _ensure(self) -> None:
+        if self._evidence is not None:
+            return
+        ev = _load(self.store, EVIDENCE)
+        self._evidence = ev
+        self._ids = set(ev["evidence_id"])
+        official = ev[ev["source_type"] == "official_report"].sort_values("first_seen_at", kind="stable")
+        self._latest_official = dict(zip(official["source_id"], official["status"]))
 
     def add_evidence_new(self, items: list[Evidence]) -> list[Evidence]:
-        if self._ids is None:
-            self._ids = set(_load(self.store, EVIDENCE)["evidence_id"])
+        """Store what's new. Official report cells are tracked as transitions: a status equal to that cell's latest is
+        skipped, and a change back to an earlier status is a new row with a time-qualified id."""
+        self._ensure()
         new, seen = [], set()
         for e in items:
-            if e.evidence_id not in self._ids and e.evidence_id not in seen:
-                new.append(e)
-                seen.add(e.evidence_id)
+            if e.source_type == "official_report":
+                previous = self._latest_official.get(e.source_id)
+                if previous == e.status or (previous is None and e.evidence_id in self._ids | seen):
+                    continue
+                if e.evidence_id in self._ids or e.evidence_id in seen:
+                    e.evidence_id = evidence_id(e.evidence_id, pd.Timestamp(e.first_seen_at).isoformat())
+                self._latest_official[e.source_id] = e.status
+            elif e.evidence_id in self._ids or e.evidence_id in seen:
+                continue
+            new.append(e)
+            seen.add(e.evidence_id)
         if new:
-            self.store.publish(EVIDENCE, evidence_frame(new))
+            frame = evidence_frame(new)
+            self.store.publish(EVIDENCE, frame)
             self._ids |= seen
+            self._evidence = frame if self._evidence.empty else pd.concat([self._evidence, frame], ignore_index=True)
         return new
 
     def add_evidence(self, items: list[Evidence]) -> int:
         return len(self.add_evidence_new(items))
 
+    def pull_new(self, source_type: str) -> list[Evidence]:
+        """Rows of one source type written by another process (the review page) that this process hasn't seen yet."""
+        self._ensure()
+        try:
+            rows = self.store.load(EVIDENCE.name, row_filter=EqualTo("source_type", source_type))
+        except NoSuchTableError:
+            return []
+        fresh = rows[~rows["evidence_id"].isin(self._ids)]
+        if fresh.empty:
+            return []
+        self._ids |= set(fresh["evidence_id"])
+        self._evidence = pd.concat([self._evidence, fresh[EVIDENCE.schema.names]], ignore_index=True)
+        return [_to_evidence(r) for r in fresh.to_dict("records")]
+
     def evidence(self, as_of: datetime | None = None) -> pd.DataFrame:
-        return _load(self.store, EVIDENCE, as_of)
+        if as_of is not None:
+            return _load(self.store, EVIDENCE, as_of)
+        self._ensure()
+        return self._evidence.copy()
+
+    def _seed_snapshots(self) -> None:
+        if self._snapshots is not None:
+            return
+        self._snapshots = {}
+        for r in _load(self.store, SNAPSHOTS).to_dict("records"):
+            key = (r["game_id"], r["team_id"], r["player_id"])
+            self._snapshots[key] = (round(float(r["p_start"]), 6), r.get("official_status"), r.get("official_slot"),
+                                    r.get("reason"))
+            self._keys.setdefault((r["game_id"], r["team_id"]), set()).add(r["player_id"])
 
     def put_snapshots(self, df: pd.DataFrame, now: datetime) -> int:
+        """Publish changed rows. A candidate that dropped out of a team-game gets a p_start 0 row, so the latest row
+        per key always sums to 1 for that team-game."""
         if df.empty:
             return 0
+        self._seed_snapshots()
+        records = df.to_dict("records")
+        for (game, team), group in df.groupby(["game_id", "team_id"]):
+            gone = self._keys.get((game, team), set()) - set(group["player_id"])
+            for pid in sorted(gone):
+                records.append({"game_id": game, "team_id": team, "player_id": pid, "p_start": 0.0,
+                                "official_status": None, "official_slot": None, "evidence_ids": [],
+                                "reason": "no longer a candidate", "rule_version": group["rule_version"].iloc[0]})
+            self._keys[(game, team)] = set(group["player_id"])
         rows = []
-        for r in df.to_dict("records"):
+        for r in records:
             key = (r["game_id"], r["team_id"], r["player_id"])
             value = (round(float(r["p_start"]), 6), r.get("official_status"), r.get("official_slot"), r.get("reason"))
             if self._snapshots.get(key) != value:

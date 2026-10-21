@@ -46,3 +46,10 @@ def test_alarm_without_change_after_30min_is_missed_news():
     assert missed_news(a, {}, T + timedelta(minutes=31)) == a
     assert missed_news(a, {8: T + timedelta(minutes=10)}, T + timedelta(minutes=31)) == []
     assert missed_news(a, {}, T + timedelta(minutes=20)) == []
+
+
+def test_in_game_swings_never_alarm():
+    kick = {8: T - timedelta(minutes=30)}
+    assert alarms(hist((-45, 0.40), (0, 0.60)), {}, T, kickoffs=kick) == []
+    later = {8: T + timedelta(hours=3)}
+    assert alarms(hist((-45, 0.40), (0, 0.60)), {}, T, kickoffs=later)

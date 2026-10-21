@@ -4,7 +4,7 @@ import pytest
 from gnomepy.data import CatalogConfig, DatasetStore
 
 from gnome_pipelines.cfb.qb_status.evidence import Evidence
-from gnome_pipelines.cfb.qb_status.review import decide, pending
+from gnome_pipelines.cfb.qb_status.review import decide, is_json_post, pending, safe_url
 from gnome_pipelines.cfb.qb_status.store import StatusStore
 
 T0 = datetime(2026, 10, 22, 13, 0, tzinfo=timezone.utc)
@@ -49,3 +49,15 @@ def test_pending_lists_undecided_items(store):
 def test_unknown_decision_is_refused(store):
     with pytest.raises(ValueError):
         decide(store, "n1", "maybe", "user", now=T0)
+
+
+def test_confirm_can_fill_missing_ids(store):
+    ev = decide(store, "n1", "confirm", "user", player_id="9000009", game_id=9, team_id=345, now=T0)
+    assert (ev.player_id, ev.game_id, ev.team_id) == ("9000009", 9, 345)
+
+
+def test_only_web_links_are_kept_and_posts_must_be_json():
+    assert safe_url("https://example.com/a") == "https://example.com/a"
+    assert safe_url("javascript:alert(1)") is None
+    assert is_json_post({"Content-Type": "application/json; charset=utf-8"})
+    assert not is_json_post({"Content-Type": "text/plain"})

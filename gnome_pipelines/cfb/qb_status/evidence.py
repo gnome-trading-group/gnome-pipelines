@@ -21,8 +21,10 @@ _REPORT_WORDS = {"available": "available", "probable": "probable", "questionable
                  "doubtful": "doubtful", "out": "out", "game time decision": "game_time_decision"}
 
 
-def parse_report_status(text: str | None) -> str | None:
-    key = re.sub(r"[\s-]+", " ", (text or "").strip().lower())
+def parse_report_status(text) -> str | None:
+    if not isinstance(text, str):
+        return None
+    key = re.sub(r"[\s-]+", " ", text.strip().lower())
     return _REPORT_WORDS.get(key)
 
 

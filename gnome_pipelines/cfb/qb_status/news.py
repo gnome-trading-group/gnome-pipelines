@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
-from datetime import datetime
+from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from urllib.parse import quote
 
@@ -28,6 +28,8 @@ def parse_rss(xml: str) -> list[dict]:
             published = parsedate_to_datetime(pub) if pub else None
         except (TypeError, ValueError):
             published = None
+        if published is not None and published.tzinfo is None:
+            published = published.replace(tzinfo=timezone.utc)
         items.append({"title": (it.findtext("title") or "").strip(), "link": (it.findtext("link") or "").strip(),
                       "guid": (it.findtext("guid") or it.findtext("link") or "").strip(), "published": published})
     return items

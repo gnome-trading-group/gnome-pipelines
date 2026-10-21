@@ -172,4 +172,5 @@ def players_frame(index: PlayerIndex) -> pd.DataFrame:
                          "first_name": r["first_name"], "last_name": r["last_name"], "jersey": q.jersey,
                          "position": r["position"], "passer_key": q.passer_key,
                          "aliases": _aliases(r["first_name"], r["last_name"])})
-    return pd.DataFrame(rows, columns=PLAYERS.schema.names)
+    # A transfer can appear on two rosters in one season; keep one row per (season, player): the last listed
+    return pd.DataFrame(rows, columns=PLAYERS.schema.names).drop_duplicates(["season", "player_id"], keep="last")

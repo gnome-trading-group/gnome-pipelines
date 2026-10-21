@@ -3,7 +3,8 @@ from datetime import date, datetime, timezone
 import pandas as pd
 import pytest
 
-from gnome_pipelines.cfb.qb_status.availability import FeedError, fetch_conference, find_game, report_evidence
+from gnome_pipelines.cfb.qb_status.availability import (FeedError, fetch_conference, find_game, report_arrivals,
+                                                         report_evidence)
 from gnome_pipelines.cfb.qb_status.crosswalk import PlayerIndex, TeamIndex
 
 SEEN = datetime(2026, 10, 21, 22, 13, tzinfo=timezone.utc)
@@ -130,3 +131,15 @@ def test_mac_miami_means_miami_ohio():
             OpponentDisplay="vs. Ohio", Week="Sat, 24 Oct 2026 00:00:00 GMT", WeekNum=8)
     ev = report_evidence("MAC", payload(r), SEEN, TeamIndex(games), {2026: PlayerIndex(rosters, PASSERS, 2026)}, games)
     assert ev and all(e.team_id == 193 and e.game_id == 9 and e.review_state == "auto" for e in ev)
+
+
+def test_malformed_row_is_skipped_and_good_rows_survive():
+    bad = row(Player="Mystery Person", Number=4, **{"Initial": {"x": 1}, "Update 1": None})
+    ev = run(payload(bad, row()))
+    assert [e.report_slot for e in ev] == ["Initial", "Update 1", "Update 2", "Game Day"]
+
+
+def test_arrivals_count_every_row_including_non_qbs():
+    arrived = report_arrivals("SEC", payload(row(Player="Wide Out", Number="#9", **{"Update 2": "", "Game Day": ""})),
+                              TeamIndex(GAMES), GAMES)
+    assert arrived == {(7, "Initial"), (7, "Update 1")}

@@ -6,8 +6,11 @@ Rule v1:
 2. Availability comes from AVAILABILITY; left_game_injured 0.5, not_starting 0, returned 1, no claim 1.
 3. Role claims, applied in the order seen: expected_starter gives that QB a 0.90 base (the rest share 0.10);
    qb_change gives the new QB the starter's base and halves the old starter's.
-4. The starter (highest base) gets base x availability; the rest of the mass goes to the others in proportion to
-   base x availability, or equally if those are all zero. With no other known QB it goes to "unknown".
+4. The starter (highest base) gets base x availability; the rest of the mass goes to the other candidates who can
+   play (availability > 0), in proportion to base x availability, or equally if those are all zero. If nobody else
+   can play, the starter gets his availability and the rest goes to "unknown". A player who is Out never gets mass.
+Team-level game-night flags (no game id) count only if seen after `since`, the team's previous kickoff, so a flag
+from an old game can't keep deciding the starter.
 """
 from __future__ import annotations
 
@@ -33,13 +36,17 @@ def _availability(status: str) -> float:
     return AVAILABILITY.get(status, EXTRA_AVAILABILITY.get(status, 1.0))
 
 
-def _relevant(evidence: pd.DataFrame, game_id: int, team_id: int, as_of: datetime) -> pd.DataFrame:
+def _relevant(evidence: pd.DataFrame, game_id: int, team_id: int, as_of: datetime,
+              since: datetime | None) -> pd.DataFrame:
     if evidence.empty:
         return evidence.assign(_t=pd.Series(dtype="datetime64[ns, UTC]"))
     seen = pd.to_datetime(evidence["first_seen_at"], utc=True)
+    team_level = evidence["game_id"].isna() & evidence["status"].isin(TEAM_LEVEL)
+    if since is not None:
+        team_level &= seen >= pd.Timestamp(since)
     keep = ((seen <= pd.Timestamp(as_of)) & evidence["review_state"].isin(USED_STATES)
             & (evidence["team_id"] == team_id) & evidence["player_id"].notna()
-            & ((evidence["game_id"] == game_id) | (evidence["game_id"].isna() & evidence["status"].isin(TEAM_LEVEL))))
+            & ((evidence["game_id"] == game_id) | team_level))
     return evidence[keep].assign(_t=seen[keep]).sort_values("_t", kind="stable")
 
 
@@ -78,8 +85,8 @@ def _latest_claims(ev: pd.DataFrame, pid: str) -> tuple[pd.Series | None, pd.Ser
 
 
 def team_status(game_id: int, team_id: int, cands: pd.DataFrame, evidence: pd.DataFrame,
-                as_of: datetime) -> pd.DataFrame:
-    ev = _relevant(evidence, game_id, team_id, as_of)
+                as_of: datetime, since: datetime | None = None) -> pd.DataFrame:
+    ev = _relevant(evidence, game_id, team_id, as_of, since)
     base = {str(r.player_id): float(r.base) for r in cands.itertuples()}
     for pid in ev["player_id"].astype(str):
         base.setdefault(pid, 0.0)
@@ -100,22 +107,22 @@ def team_status(game_id: int, team_id: int, cands: pd.DataFrame, evidence: pd.Da
 
     p = {k: 0.0 for k in base}
     if base:
-        starter = max(base, key=lambda k: (base[k], k))
-        p[starter] = base[starter] * avail[starter]
-        rest = 1.0 - p[starter]
-        others = [k for k in base if k != starter]
-        weights = {k: base[k] * avail[k] for k in others}
-        total = sum(weights.values())
-        if total > 0:
-            for k in others:
-                p[k] = rest * weights[k] / total
-        elif others:
-            pool = [k for k in others if avail[k] > 0] or others
-            for k in pool:
-                p[k] = rest / len(pool)
-        elif rest > 1e-12:
-            p[UNKNOWN] = rest
-            why[UNKNOWN] = "no other known QB"
+        if max(base.values()) <= 0:
+            base = {k: 1.0 / len(base) for k in base}
+        starter = max(base, key=lambda k: (base[k], avail[k], k))
+        active = [k for k in base if k != starter and avail[k] > 0]
+        if not active:
+            p[starter] = avail[starter]
+            if 1.0 - p[starter] > 1e-12:
+                p[UNKNOWN] = 1.0 - p[starter]
+                why[UNKNOWN] = "no other available QB"
+        else:
+            p[starter] = base[starter] * avail[starter]
+            rest = 1.0 - p[starter]
+            weights = {k: base[k] * avail[k] for k in active}
+            total = sum(weights.values())
+            for k in active:
+                p[k] = rest * (weights[k] / total if total > 0 else 1 / len(active))
 
     rows = []
     for pid, prob in p.items():

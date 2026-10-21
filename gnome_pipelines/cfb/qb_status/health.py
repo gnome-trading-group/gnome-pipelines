@@ -5,7 +5,7 @@ from datetime import datetime
 
 import pandas as pd
 
-from gnome_pipelines.cfb.qb_status.evidence import evidence_id
+from gnome_pipelines.cfb.qb_status.evidence import Evidence, evidence_id
 from gnome_pipelines.datasets.qb_status import HEALTH
 
 
@@ -40,6 +40,18 @@ def kickoff_accuracy(snapshots: pd.DataFrame, actual: pd.DataFrame, at: datetime
     return rows
 
 
+def news_lag_rows(new: list[Evidence], changed_teams: set[int]) -> list[dict]:
+    """How long after publication we captured news that changed a team's status (first_seen_at - published_at)."""
+    rows = []
+    for e in new:
+        if e.published_at is None or e.team_id not in changed_teams:
+            continue
+        lag = (pd.Timestamp(e.first_seen_at) - pd.Timestamp(e.published_at)).total_seconds()
+        rows.append(health_row("news_lag", e.first_seen_at, f"{e.source_type} {e.source_org}: {e.status}", lag,
+                               team_id=e.team_id, game_id=e.game_id))
+    return rows
+
+
 def health_report(health: pd.DataFrame, since: datetime) -> str:
     h = health[pd.to_datetime(health["at"], utc=True) >= pd.Timestamp(since)] if len(health) else health
     if h.empty:
@@ -52,4 +64,4 @@ def health_report(health: pd.DataFrame, since: datetime) -> str:
     return "\n".join(lines)
 
 
-__all__ = ["HEALTH", "health_report", "health_row", "kickoff_accuracy", "report_lag_rows"]
+__all__ = ["HEALTH", "health_report", "health_row", "kickoff_accuracy", "news_lag_rows", "report_lag_rows"]

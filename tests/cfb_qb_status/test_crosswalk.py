@@ -88,3 +88,9 @@ def test_suffixes_and_punctuation_still_match():
     assert index.match(264, "Devon Marsh", None).player_id == "1"
     assert index.match(275, "Danny O'Rourke", "#16").player_id == "2"
     assert index.match(349, "Kody Lane-Porter", None).player_id == "3"
+
+
+def test_players_frame_has_one_row_per_player_even_when_listed_twice():
+    twice = pd.concat([ROSTERS, ROSTERS.iloc[[0]].assign(team="Oklahoma", team_id=201)], ignore_index=True)
+    df = players_frame(PlayerIndex(twice, PASSERS, 2026))
+    assert not df.duplicated(["season", "player_id"]).any()

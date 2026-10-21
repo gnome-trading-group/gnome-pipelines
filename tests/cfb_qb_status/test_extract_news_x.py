@@ -86,3 +86,8 @@ def test_x_evidence_has_no_raw_text():
     ev = x_evidence(post, "msbeat", [("9000001", "doubtful", "expected", 0.6)], "Mississippi State", 344, SEEN, 8)
     assert len(ev) == 1 and "SECRET RAW TEXT" not in (ev[0].paraphrase or "")
     assert len(ev[0].paraphrase) <= 140 and ev[0].source_id == "1850" and ev[0].review_state == "pending"
+
+
+def test_rss_dates_without_zone_are_utc():
+    xml = RSS.replace("Thu, 22 Oct 2026 13:05:00 GMT", "Thu, 22 Oct 2026 13:05:00 -0000")
+    assert parse_rss(xml)[0]["published"] == datetime(2026, 10, 22, 13, 5, tzinfo=timezone.utc)

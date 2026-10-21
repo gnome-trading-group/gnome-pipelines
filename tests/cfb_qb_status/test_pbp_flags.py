@@ -38,7 +38,8 @@ def test_no_flags_in_normal_game():
 
 
 def test_backup_dropback_raises_qb_change():
-    s = summary(*NORMAL, drive("Mississippi State", play("Blake Rowe pass complete to J. Doe for 3 yds", 2)))
+    s = summary(*NORMAL, drive("Mississippi State", play("Blake Rowe pass complete to J. Doe for 3 yds", 2),
+                               play("Blake Rowe pass incomplete", 2)))
     flags = game_flags(s, STARTERS, SEEN)
     assert [(f.status, f.player_raw, f.team) for f in flags] == [("qb_change", "Blake Rowe", "Mississippi State")]
     assert flags[0].game_id is None and flags[0].source_type == "pbp_flag" and flags[0].source_id == "401999"
@@ -74,3 +75,26 @@ def test_live_games_lists_in_progress_events():
     board = {"events": [{"id": "1", "competitions": [{"status": {"type": {"state": "in"}}}]},
                         {"id": "2", "competitions": [{"status": {"type": {"state": "pre"}}}]}]}
     assert live_games(board) == ["1"]
+
+
+QBS = {"Mississippi State": {"stone", "rowe"}, "LSU": {"holt"}}
+
+
+def test_one_backup_dropback_is_not_a_qb_change():
+    s = summary(*NORMAL, drive("Mississippi State", play("Blake Rowe pass complete", 2)))
+    assert game_flags(s, STARTERS, SEEN, QBS) == []
+
+
+def test_non_qb_passer_and_penalty_text_never_flag():
+    s = summary(*NORMAL, drive("Mississippi State", play("Jordan Reeve pass complete to J. Doe for 20 yds", 2),
+                               play("Jordan Reeve pass incomplete", 2),
+                               play("PENALTY on MSST, Pass Interference, 15 yards", 2),
+                               play("Two-Point Pass Conversion Failed", 2)))
+    assert game_flags(s, STARTERS, SEEN, QBS) == []
+
+
+def test_suffix_surnames_compare_compactly():
+    starters = {"Mississippi State": "marsh"}
+    s = summary(drive("Mississippi State", play("Devon Marsh Jr. pass complete", 1)),
+                drive("Mississippi State", play("Devon Marsh Jr. pass incomplete, Devon Marsh Jr. injured", 1)))
+    assert [f.status for f in game_flags(s, starters, SEEN, {"Mississippi State": {"marsh"}})] == ["left_game_injured"]

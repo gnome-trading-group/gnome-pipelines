@@ -99,3 +99,28 @@ def test_probabilities_sum_to_one():
         p, _ = status(evs, cands=cands)
         assert sum(p.values()) == pytest.approx(1.0)
         assert all(0.0 <= v <= 1.0 for v in p.values())
+
+
+def test_flags_from_before_the_previous_kickoff_are_ignored():
+    old = ev("P", "qb_change", T0 - timedelta(days=28), source="pbp_flag", game=None)
+    p, _ = status([old], as_of=T0 + timedelta(days=1))
+    assert p["P"] > p["T"]
+    df = team_status(8, 344, CANDS, evidence_frame([old]), T0 + timedelta(days=1), since=T0 - timedelta(days=6))
+    p = dict(zip(df["player_id"], df["p_start"]))
+    assert p == pytest.approx({"T": 0.80, "P": 0.20})
+
+
+def test_out_backup_gets_nothing_and_healthy_starter_gets_the_rest():
+    p, _ = status([ev("P", "out", T0, slot="Game Day")])
+    assert p == pytest.approx({"T": 1.0, "P": 0.0})
+
+
+def test_questionable_starter_with_out_backup_leaves_rest_unknown():
+    p, _ = status([ev("T", "questionable", T0, slot="Update 1"), ev("P", "out", T0, slot="Game Day")])
+    assert p["T"] == pytest.approx(0.5) and p["P"] == 0.0 and p["unknown"] == pytest.approx(0.5)
+
+
+def test_evidence_only_players_never_hand_mass_to_an_out_player():
+    empty = CANDS.iloc[0:0]
+    p, _ = status([ev("A1", "out", T0, slot="Initial"), ev("A2", "questionable", T0, slot="Initial")], cands=empty)
+    assert p["A1"] == 0.0 and p["A2"] > 0.0

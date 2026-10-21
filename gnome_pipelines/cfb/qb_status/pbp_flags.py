@@ -2,7 +2,9 @@
 
 ESPN runs about 40 seconds behind the field, which is fine for flags. Flags are team-level evidence (game_id None, the
 ESPN event id in source_id) that the engine applies to the team's next game. Fourth-quarter plays with a margin of 21
-or more are ignored, because backups routinely mop up in blowouts.
+or more are ignored, because backups routinely mop up in blowouts. With qb_names, only the team's rostered QBs count
+as passers, so trick plays and penalty text ("Pass Interference") never flag; a QB change also needs two dropbacks by
+the new QB, so a one-play cameo doesn't count.
 """
 from __future__ import annotations
 
@@ -15,7 +17,7 @@ SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/football/college-foo
 SUMMARY = "https://site.api.espn.com/apis/site/v2/sports/football/college-football/summary"
 DROPBACK = re.compile(r"\b(pass|sacked|scrambles?)\b", re.IGNORECASE)
 SUFFIXES = {"jr", "jr.", "sr", "sr.", "ii", "iii", "iv"}
-GARBAGE_MARGIN, POSSESSIONS_WITHOUT_STARTER = 21, 2
+GARBAGE_MARGIN, POSSESSIONS_WITHOUT_STARTER, CHANGE_DROPBACKS = 21, 2, 2
 
 
 def live_games(scoreboard: dict) -> list[str]:
@@ -49,18 +51,24 @@ def _raw_name(text: str) -> str:
     return " ".join(_name_tokens(text) or [])
 
 
+def _compact(text: str | None) -> str:
+    return re.sub(r"[^a-z]", "", (text or "").lower())
+
+
 def _garbage(play: dict) -> bool:
     period = (play.get("period") or {}).get("number") or 0
     margin = abs((play.get("homeScore") or 0) - (play.get("awayScore") or 0))
     return period >= 4 and margin >= GARBAGE_MARGIN
 
 
-def game_flags(summary: dict, expected_starters: dict[str, str], seen_at: datetime) -> list[Evidence]:
+def game_flags(summary: dict, expected_starters: dict[str, str], seen_at: datetime,
+               qb_names: dict[str, set[str]] | None = None) -> list[Evidence]:
     header = summary.get("header") or {}
     event, season = str(header.get("id")), (header.get("season") or {}).get("year")
     d = summary.get("drives") or {}
     drives = list(d.get("previous") or []) + ([d["current"]] if d.get("current") else [])
-    state = {team: {"seen": False, "since": 0} for team in expected_starters}
+    state = {team: {"seen": False, "since": 0, "others": {}} for team in expected_starters}
+    qbs = {team: {_compact(n) for n in names} for team, names in (qb_names or {}).items()}
     out: dict[str, Evidence] = {}
 
     def flag(team: str, status: str, name: str, text: str) -> None:
@@ -77,24 +85,27 @@ def game_flags(summary: dict, expected_starters: dict[str, str], seen_at: dateti
         team = team_info.get("location") or team_info.get("displayName")
         if team not in expected_starters:
             continue
-        starter, st = expected_starters[team], state[team]
+        starter, st = _compact(expected_starters[team]), state[team]
         plays = drive.get("plays") or []
         starter_dropback, garbage = False, False
         for play in plays:
             text = play.get("text") or ""
             garbage = _garbage(play)
-            if starter in text.lower() and "injur" in text.lower():
-                flag(team, "left_game_injured", starter.title(), text)
-            last = passer_last_name(text)
-            if last is None:
+            low = text.lower()
+            if "injur" in low and (starter in low or starter in _compact(text)):
+                flag(team, "left_game_injured", expected_starters[team].title(), text)
+            last = _compact(passer_last_name(text))
+            if not last or (qb_names is not None and last not in qbs.get(team, set()) and last != starter):
                 continue
             if last == starter:
                 st["seen"], starter_dropback, st["since"] = True, True, 0
             elif st["seen"] and not garbage:
-                flag(team, "qb_change", _raw_name(text), text)
+                st["others"][last] = st["others"].get(last, 0) + 1
+                if st["others"][last] >= CHANGE_DROPBACKS:
+                    flag(team, "qb_change", _raw_name(text), text)
         if st["seen"] and plays and not starter_dropback and not garbage:
             st["since"] += 1
             if st["since"] >= POSSESSIONS_WITHOUT_STARTER:
-                flag(team, "left_game_injured", starter.title(), f"{starter.title()}: no dropbacks for "
-                                                                  f"{st['since']} straight possessions")
+                flag(team, "left_game_injured", expected_starters[team].title(),
+                     f"{expected_starters[team].title()}: no dropbacks for {st['since']} straight possessions")
     return list(out.values())

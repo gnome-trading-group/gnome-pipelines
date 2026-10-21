@@ -20,14 +20,15 @@ import requests
 from gnomepy.data import DatasetStore
 from pyiceberg.expressions import EqualTo
 
-from gnome_pipelines.cfb.qb_status.availability import CONFERENCES, FeedError, fetch_conference, report_evidence
+from gnome_pipelines.cfb.qb_status.availability import CONFERENCES, fetch_conference, report_arrivals, report_evidence
 from gnome_pipelines.cfb.qb_status.backfill import capture_evidence
 from gnome_pipelines.cfb.qb_status.candidates import candidates, game_starters, next_game, with_roster_ids
-from gnome_pipelines.cfb.qb_status.crosswalk import MATCH_OK, PlayerIndex, TeamIndex
+from gnome_pipelines.cfb.qb_status.crosswalk import MATCH_OK, PlayerIndex, TeamIndex, _surname, players_frame
 from gnome_pipelines.cfb.qb_status.engine import team_status
 from gnome_pipelines.cfb.qb_status.evidence import Evidence, evidence_id
 from gnome_pipelines.cfb.qb_status.extract import RuleExtractor
-from gnome_pipelines.cfb.qb_status.health import health_report, health_row, kickoff_accuracy, report_lag_rows
+from gnome_pipelines.cfb.qb_status.health import (health_report, health_row, kickoff_accuracy, news_lag_rows,
+                                                   report_lag_rows)
 from gnome_pipelines.cfb.qb_status.market_alarm import EVENTS, SERIES, Alarm, alarms, kalshi_home_probs, missed_news
 from gnome_pipelines.cfb.qb_status.news import news_evidence, parse_rss, rss_url
 from gnome_pipelines.cfb.qb_status.pbp_flags import SCOREBOARD, SUMMARY, game_flags, live_games
@@ -55,12 +56,25 @@ class Task:
 
 
 class Service:
+    """Runs due tasks each step. Evidence is stamped with a clock read taken after its task returns (the true capture
+    time). A task that takes longer than task_timeout, or a step that starts long after the last one, means the
+    laptop slept or the network stalled: a gap row is written and every task runs again. Failed tasks retry after
+    RETRY_BASE seconds, doubling, up to their normal interval."""
+
+    RETRY_BASE = 15.0
+
     def __init__(self, tasks: list[Task], store: StatusStore,
                  recompute: Callable[[set[int], list[Evidence], datetime], None] | None = None,
-                 clock: Callable[[], datetime] = utcnow, sleep: Callable[[float], None] = time.sleep) -> None:
+                 clock: Callable[[], datetime] | None = None, sleep: Callable[[float], None] = time.sleep,
+                 task_timeout: float = 180.0) -> None:
         self.tasks, self.store, self.recompute, self.clock, self.sleep = tasks, store, recompute, clock, sleep
+        self.task_timeout = task_timeout
         self.next_due: dict[str, datetime] = {}
+        self.failures: dict[str, int] = {}
         self.last_step: datetime | None = None
+
+    def _time(self, fallback: datetime) -> datetime:
+        return self.clock() if self.clock is not None else fallback
 
     def step(self, now: datetime) -> None:
         smallest = min(t.interval(now) for t in self.tasks)
@@ -70,40 +84,114 @@ class Service:
                 self.store.put_health([health_row("gap", now, f"no step for {elapsed:.0f}s; catching up", elapsed)])
                 self.next_due = {}
         new: list[Evidence] = []
+        rerun_all = False
         for t in self.tasks:
             due = self.next_due.get(t.name)
             if due is not None and now < due:
                 continue
+            before = self._time(now)
             try:
-                new += self.store.add_evidence_new(t.run(now) or [])
+                found = t.run(before) or []
+                after = self._time(now)
+                took = (after - before).total_seconds()
+                if took > self.task_timeout:
+                    self.store.put_health([health_row("gap", after, f"{t.name} took {took:.0f}s (sleep or stall)",
+                                                      took)])
+                    rerun_all = True
+                for e in found:
+                    if e.first_seen_at < after:
+                        e.first_seen_at = after
+                new += self.store.add_evidence_new(found)
+                self.failures[t.name] = 0
+                self.next_due[t.name] = after + timedelta(seconds=t.interval(after))
             except Exception as e:
                 self.store.put_health([health_row("source_error", now, f"{t.name}: {type(e).__name__}: {e}")])
-            finally:
-                self.next_due[t.name] = now + timedelta(seconds=t.interval(now))
+                n = self.failures[t.name] = self.failures.get(t.name, 0) + 1
+                retry = min(t.interval(now), self.RETRY_BASE * 2 ** (n - 1))
+                self.next_due[t.name] = self._time(now) + timedelta(seconds=retry)
+        if rerun_all:
+            self.next_due = {}
         teams = {e.team_id for e in new if e.team_id is not None}
         if teams and self.recompute is not None:
-            self.recompute(teams, new, now)
+            try:
+                self.recompute(teams, new, self._time(now))
+            except Exception as e:
+                self.store.put_health([health_row("source_error", now, f"recompute: {type(e).__name__}: {e}")])
         self.last_step = now
 
     def run_forever(self) -> None:
+        clock = self.clock or utcnow
+        self.clock = clock
         while True:
-            self.step(self.clock())
-            self.last_step = self.clock()
+            self.step(clock())
+            self.last_step = clock()
             self.sleep(1.0)
+
+
+CACHE_DIR = Path.home() / ".cache" / "gnome-pipelines" / "qb_status_research_cache"
+RESEARCH_TABLES = ("cfb_games", "cfb_rosters", "cfb_passers")
+
+
+def fbs_games(games: pd.DataFrame) -> pd.DataFrame:
+    """Games with at least one FBS side: FCS opponents are real games for the FBS team's status and its QB history."""
+    keep = (games["home_classification"] == "fbs") | (games["away_classification"] == "fbs")
+    return games[keep].reset_index(drop=True)
+
+
+def _compact(text: str | None) -> str:
+    return "".join(c for c in (text or "").lower() if c.isalpha())
+
+
+def resolve_flags(flags: list[Evidence], team_ids: dict[str, int], index: PlayerIndex) -> list[Evidence]:
+    """Attach team and player ids to game-night flags. A QB change counts only if the new passer is one of the team's
+    rostered QBs; anything else (a trick-play pass, penalty text) is dropped rather than queued for review."""
+    out = []
+    for f in flags:
+        tid = team_ids.get(f.team)
+        if tid is None:
+            continue
+        qbs = index.qbs(tid)
+        f.team_id = tid
+        if f.status == "qb_change":
+            m = index.match(tid, f.player_raw or "", None)
+            if m.player_id is None or m.confidence < MATCH_OK or m.player_id not in set(qbs["player_id"]):
+                continue
+            f.player_id, f.match_confidence = m.player_id, m.confidence
+        else:
+            last = _compact((f.player_raw or "").split()[-1] if f.player_raw else "")
+            hits = [pid for pid, name in zip(qbs["player_id"], qbs["name"]) if _compact(str(name).split()[-1]) == last]
+            if len(hits) != 1:
+                f.review_state = "pending"
+            f.player_id, f.match_confidence = (hits[0], 0.9) if len(hits) == 1 else (None, 0.0)
+        out.append(f)
+    return out
+
+
+def fresh_alarms(found: list[Alarm], alarmed_until: dict[int, datetime], now: datetime) -> list[Alarm]:
+    """One alarm per game per move: after an alarm, the same game can't alarm again for the alarm window."""
+    out = []
+    for a in found:
+        if pd.Timestamp(now) >= pd.Timestamp(alarmed_until.get(a.game_id, datetime.min.replace(tzinfo=timezone.utc))):
+            out.append(a)
+            alarmed_until[a.game_id] = now + timedelta(minutes=60)
+    return out
 
 
 class Context:
     """Everything the real pollers share: the research data, indexes, watches and in-memory market history."""
 
-    def __init__(self, research: DatasetStore, status: StatusStore, season: int) -> None:
+    def __init__(self, research: DatasetStore, status: StatusStore, season: int, cache_dir: Path | None = None) -> None:
         self.research, self.status, self.season = research, status, season
+        self.cache_dir = Path(cache_dir or CACHE_DIR)
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
         self.live: list[str] = []
         self.market: list[dict] = []
         self.pending_alarms: list[Alarm] = []
+        self.alarmed_until: dict[int, datetime] = {}
         self.last_change: dict[int, datetime] = {}
-        self.news_cursor = 0
+        self.accuracy_done: set[int] = set()
+        self.news_cursor, self.watch_cursor = 0, 0
         self.refresh()
         self.watches = status.watches()
         ev = status.evidence()
@@ -111,18 +199,38 @@ class Context:
         self.observed = {(r.source_org, int(r.game_id), r.report_slot): pd.Timestamp(r.first_seen_at)
                          for r in official.sort_values("first_seen_at", ascending=False).itertuples(index=False)}
 
+    def _load_research(self) -> dict[str, pd.DataFrame]:
+        try:
+            tables = {name: self.research.load(name, row_filter=EqualTo("season", self.season))
+                      for name in RESEARCH_TABLES}
+        except Exception as e:
+            cached = {name: self.cache_dir / f"{name}_{self.season}.parquet" for name in RESEARCH_TABLES}
+            if not all(p.exists() for p in cached.values()):
+                raise
+            self.status.put_health([health_row("source_error", utcnow(),
+                                               f"research reads failed ({type(e).__name__}); using the local cache")])
+            return {name: pd.read_parquet(p) for name, p in cached.items()}
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        for name, df in tables.items():
+            df.to_parquet(self.cache_dir / f"{name}_{self.season}.parquet")
+        return tables
+
     def refresh(self) -> None:
-        games = self.research.load("cfb_games", row_filter=EqualTo("season", self.season))
-        fbs = (games["home_classification"] == "fbs") & (games["away_classification"] == "fbs")
-        self.games = games[fbs].reset_index(drop=True)
-        self.rosters = self.research.load("cfb_rosters", row_filter=EqualTo("season", self.season))
-        self.passers = self.research.load("cfb_passers", row_filter=EqualTo("season", self.season))
+        t = self._load_research()
+        self.games = fbs_games(t["cfb_games"])
+        self.rosters, self.passers = t["cfb_rosters"], t["cfb_passers"]
         self.teams = TeamIndex(self.games)
         self.players = {self.season: PlayerIndex(self.rosters, self.passers, self.season)}
         self.kickoffs = dict(zip(self.games["game_id"].astype(int), pd.to_datetime(self.games["kickoff"], utc=True)))
-        names = pd.concat([self.games[["home_id", "home_team"]].set_axis(["id", "name"], axis=1),
-                           self.games[["away_id", "away_team"]].set_axis(["id", "name"], axis=1)])
-        self.team_names = {int(i): n for i, n in names.drop_duplicates("id").itertuples(index=False)}
+        names = pd.concat([self.games[["home_id", "home_team", "home_classification"]].set_axis(["id", "name", "c"], axis=1),
+                           self.games[["away_id", "away_team", "away_classification"]].set_axis(["id", "name", "c"], axis=1)])
+        names = names.dropna(subset=["id"]).drop_duplicates("id")
+        self.team_names = {int(i): n for i, n, _ in names.itertuples(index=False)}
+        self.fbs_ids = sorted(int(i) for i, _, c in names.itertuples(index=False) if c == "fbs")
+        try:
+            self.status.put_players(players_frame(self.players[self.season]))
+        except Exception as e:
+            self.status.put_health([health_row("source_error", utcnow(), f"players: {type(e).__name__}: {e}")])
 
     def upcoming_conference_games(self, now: datetime, days: int) -> pd.DataFrame:
         kick = pd.to_datetime(self.games["kickoff"], utc=True)
@@ -134,24 +242,37 @@ class Context:
         c = candidates(self.team_names.get(team_id, ""), team_id, self.season, now, self.passers, self.games)
         return with_roster_ids(c, team_id, self.players[self.season])
 
-    def last_starter_name(self, team_id: int, now: datetime) -> str | None:
+    def previous_kickoff(self, team_id: int, now: datetime) -> datetime | None:
+        g = self.games[(self.games["home_id"] == team_id) | (self.games["away_id"] == team_id)]
+        kick = pd.to_datetime(g["kickoff"], utc=True)
+        past = kick[kick < pd.Timestamp(now)]
+        return past.max().to_pydatetime() if len(past) else None
+
+    def starter_surname(self, team_id: int, now: datetime) -> str | None:
         c = self.team_candidates(team_id, now)
         if c.empty:
             return None
         pid = c.loc[c["last_starter"], "player_id"].iloc[0]
         r = self.rosters[self.rosters["player_id"].astype(str) == pid]
-        return str(r["last_name"].iloc[0]).lower() if len(r) else None
+        return _surname(r["last_name"].iloc[0]) if len(r) else None
+
+    def watched_count(self, now: datetime) -> int:
+        return len(watched_teams(self.watches, now))
 
     def recompute(self, teams: set[int], new: list[Evidence], now: datetime) -> None:
         evidence = self.status.evidence()
+        changed = set()
         for tid in teams:
             name = self.team_names.get(tid)
             game = next_game(tid, now, self.games) if name else None
             if game is None:
                 continue
             cands = self.team_candidates(tid, now)
-            if self.status.put_snapshots(team_status(game, tid, cands, evidence, now), now):
+            status = team_status(game, tid, cands, evidence, now, since=self.previous_kickoff(tid, now))
+            if self.status.put_snapshots(status, now):
                 self.last_change[game] = now
+                changed.add(tid)
+        self.status.put_health(news_lag_rows(new, changed))
         self.watches = update_watches(self.watches, new, self.kickoffs, now)
         self.status.put_watches(self.watches)
 
@@ -172,29 +293,27 @@ class Context:
         return report_poll_interval(now, expected, unknown, overdue)
 
     def reports_run(self, now: datetime) -> list[Evidence]:
-        out, errors = [], []
+        out, health, new_obs = [], [], {}
         for conf in CONFERENCES:
             try:
                 payload = fetch_conference(self.session, conf)
-            except (FeedError, requests.RequestException) as e:
-                errors.append(health_row("source_error", now, f"reports {conf}: {e}"))
-                continue
-            out += report_evidence(conf, payload, now, self.teams, self.players, self.games)
-        new_obs = {}
-        for e in out:
-            key = (e.source_org, e.game_id, e.report_slot)
-            if e.game_id is not None and key not in self.observed:
-                self.observed[key] = pd.Timestamp(now)
-                new_obs[key] = now
+                errors: list[str] = []
+                out += report_evidence(conf, payload, now, self.teams, self.players, self.games, errors=errors)
+                health += [health_row("source_error", now, e) for e in errors[:5]]
+                for game_id, slot in report_arrivals(conf, payload, self.teams, self.games):
+                    if (conf, game_id, slot) not in self.observed:
+                        self.observed[(conf, game_id, slot)] = pd.Timestamp(now)
+                        new_obs[(conf, game_id, slot)] = now
+            except Exception as e:
+                health.append(health_row("source_error", now, f"reports {conf}: {type(e).__name__}: {e}"))
         sched = [schedule_rows(g.code, int(g.game_id), pd.Timestamp(g.kickoff).to_pydatetime(),
                                {s: t for (c, gid, s), t in self.observed.items() if c == g.code and gid == g.game_id},
                                now) for g in self.upcoming_conference_games(now, 7).itertuples(index=False)]
         if sched:
             frame = pd.concat(sched, ignore_index=True)
-            self.status.put_health(report_lag_rows(frame.assign(state="expected"), new_obs) + errors)
+            health += report_lag_rows(frame.assign(state="expected"), new_obs)
             self.status.put_schedule(frame)
-        elif errors:
-            self.status.put_health(errors)
+        self.status.put_health(health)
         return out
 
     def espn_interval(self, now: datetime) -> float:
@@ -203,26 +322,24 @@ class Context:
     def espn_run(self, now: datetime) -> list[Evidence]:
         board = self.session.get(SCOREBOARD, params={"groups": 80, "limit": 300}, timeout=20).json()
         self.live = live_games(board)
-        out = []
+        out, health = [], []
+        index = self.players[self.season]
         for gid in self.live:
-            summary = self.session.get(SUMMARY, params={"event": gid}, timeout=20).json()
-            comps = summary["header"]["competitions"][0]["competitors"]
-            ids = {c["team"]["location"]: int(c["team"]["id"]) for c in comps}
-            starters = {loc: s for loc, tid in ids.items() if (s := self.last_starter_name(tid, now))}
-            for f in game_flags(summary, starters, now):
-                f.team_id = ids.get(f.team)
-                if f.team_id is None:
-                    f.review_state = "pending"
-                    continue
-                m = self.players[self.season].match(f.team_id, f.player_raw or "", None)
-                f.player_id, f.match_confidence = m.player_id, m.confidence
-                if m.player_id is None or m.confidence < MATCH_OK:
-                    f.review_state = "pending"
-                out.append(f)
+            try:
+                summary = self.session.get(SUMMARY, params={"event": gid}, timeout=20).json()
+                comps = summary["header"]["competitions"][0]["competitors"]
+                ids = {c["team"]["location"]: int(c["team"]["id"]) for c in comps}
+                starters = {loc: s for loc, tid in ids.items() if (s := self.starter_surname(tid, now))}
+                qb_names = {loc: {_surname(str(n).split()[-1]) for n in index.qbs(tid)["name"]}
+                            for loc, tid in ids.items()}
+                out += resolve_flags(game_flags(summary, starters, now, qb_names), ids, index)
+            except Exception as e:
+                health.append(health_row("source_error", now, f"espn {gid}: {type(e).__name__}: {e}"))
+        self.status.put_health(health)
         return out
 
     def market_run(self, now: datetime) -> list[Evidence]:
-        events, cursor = [], ""
+        events, cursor, seen = [], "", set()
         while True:
             params = {"series_ticker": SERIES, "status": "open", "with_nested_markets": "true", "limit": 200}
             if cursor:
@@ -230,13 +347,15 @@ class Context:
             d = self.session.get(EVENTS, params=params, timeout=30).json()
             events += d.get("events", [])
             cursor = d.get("cursor") or ""
-            if not cursor:
+            if not cursor or cursor in seen:
                 break
+            seen.add(cursor)
         for game_id, p in kalshi_home_probs(events, self.games, self.teams).items():
             self.market.append({"game_id": game_id, "at": pd.Timestamp(now), "p_home": p})
         self.market = [m for m in self.market if pd.Timestamp(now) - m["at"] <= timedelta(hours=2)]
+        found = alarms(pd.DataFrame(self.market), self.last_change, now, self.kickoffs)
         out = []
-        for a in alarms(pd.DataFrame(self.market), self.last_change, now):
+        for a in fresh_alarms(found, self.alarmed_until, now):
             g = self.games[self.games["game_id"] == a.game_id].iloc[0]
             hour = pd.Timestamp(now).floor("h").isoformat()
             for tid in (int(g["home_id"]), int(g["away_id"])):
@@ -246,8 +365,7 @@ class Context:
                                     season=self.season, team_id=tid, game_id=a.game_id, hedge="unclear",
                                     paraphrase=f"Kalshi moved {a.move:.2f} logit in 60 min with no QB status change",
                                     extractor="market", extraction_confidence=1.0))
-            if all(p.game_id != a.game_id for p in self.pending_alarms):
-                self.pending_alarms.append(a)
+            self.pending_alarms.append(a)
         missed = missed_news(self.pending_alarms, self.last_change, now)
         self.status.put_health([health_row("missed_news", a.at, f"game {a.game_id}: market moved {a.move:.2f}",
                                            a.move, game_id=a.game_id) for a in missed])
@@ -255,27 +373,49 @@ class Context:
                                + timedelta(minutes=30)]
         return out
 
-    def news_interval(self, now: datetime) -> float:
-        watched = watched_teams(self.watches, now)
-        n = max(len(self.team_names), 1)
-        return min(NEWS_WATCHED_EVERY / max(len(watched), 1), NEWS_SWEEP_EVERY / n) if watched else NEWS_SWEEP_EVERY / n
-
-    def news_run(self, now: datetime) -> list[Evidence]:
-        watched = sorted(watched_teams(self.watches, now))
-        everyone = sorted(self.team_names)
-        queue = watched + everyone
-        tid = queue[self.news_cursor % len(queue)]
-        self.news_cursor += 1
+    def _news_for(self, tid: int, now: datetime) -> list[Evidence]:
         name = self.team_names[tid]
         xml = self.session.get(rss_url(name), timeout=20).text
         fresh = [i for i in parse_rss(xml) if i["published"] is None or now - i["published"] <= NEWS_MAX_AGE]
         qbs = self.players[self.season].qbs(tid)
         return news_evidence(fresh, name, tid, qbs, RuleExtractor(), now, game_id=next_game(tid, now, self.games))
 
+    def news_watched_interval(self, now: datetime) -> float:
+        n = self.watched_count(now)
+        return NEWS_WATCHED_EVERY / n if n else NEWS_WATCHED_EVERY
+
+    def news_watched_run(self, now: datetime) -> list[Evidence]:
+        watched = sorted(watched_teams(self.watches, now))
+        if not watched:
+            return []
+        tid = watched[self.watch_cursor % len(watched)]
+        self.watch_cursor += 1
+        return self._news_for(tid, now)
+
+    def news_sweep_interval(self, now: datetime) -> float:
+        return NEWS_SWEEP_EVERY / max(len(self.fbs_ids), 1)
+
+    def news_sweep_run(self, now: datetime) -> list[Evidence]:
+        if not self.fbs_ids:
+            return []
+        tid = self.fbs_ids[self.news_cursor % len(self.fbs_ids)]
+        self.news_cursor += 1
+        return self._news_for(tid, now)
+
+    def manual_run(self, now: datetime) -> list[Evidence]:
+        pulled = self.status.pull_new("manual")
+        teams = {e.team_id for e in pulled if e.team_id is not None}
+        if teams:
+            self.recompute(teams, pulled, now)
+        return []
+
     def accuracy_run(self, now: datetime) -> list[Evidence]:
         kick = pd.to_datetime(self.games["kickoff"], utc=True)
         done = self.games[(kick < pd.Timestamp(now) - timedelta(hours=24))
-                          & (kick > pd.Timestamp(now) - timedelta(hours=72))]
+                          & (kick > pd.Timestamp(now) - timedelta(hours=72))
+                          & ~self.games["game_id"].isin(self.accuracy_done)]
+        if done.empty:
+            return []
         starters = game_starters(self.passers[self.passers["game_id"].isin(done["game_id"])])
         name_to_id = {n: i for i, n in self.team_names.items()}
         actual = pd.DataFrame({"game_id": starters["game_id"], "team_id": starters["offense"].map(name_to_id),
@@ -284,12 +424,14 @@ class Context:
         actual["player_id"] = [index.player_for_key(int(t), k) or k for t, k in zip(actual["team_id"],
                                                                                       actual["passer_key"])]
         rows = []
-        for g in done.itertuples(index=False):
-            snaps = self.status.snapshots(as_of=pd.Timestamp(g.kickoff).to_pydatetime())
-            snaps = snaps[snaps["game_id"] == g.game_id]
-            if len(snaps):
-                rows += kickoff_accuracy(snaps, actual[actual["game_id"] == g.game_id],
-                                         pd.Timestamp(g.kickoff).to_pydatetime())
+        for kickoff, group in done.groupby("kickoff"):
+            snaps = self.status.snapshots(as_of=pd.Timestamp(kickoff).to_pydatetime())
+            for g in group.itertuples(index=False):
+                s = snaps[snaps["game_id"] == g.game_id]
+                a = actual[actual["game_id"] == g.game_id]
+                if len(s) and len(a):
+                    rows += kickoff_accuracy(s, a, pd.Timestamp(g.kickoff).to_pydatetime())
+                    self.accuracy_done.add(int(g.game_id))
         self.status.put_health(rows)
         return []
 
@@ -298,7 +440,7 @@ class Context:
         return []
 
     def recompute_all_run(self, now: datetime) -> list[Evidence]:
-        self.recompute(set(self.team_names), [], now)
+        self.recompute(set(self.fbs_ids), [], now)
         return []
 
 
@@ -309,8 +451,10 @@ def build_service(ctx: Context, espn: bool = True, market: bool = True, news: bo
     if market:
         tasks.append(Task("market", lambda now: 120.0, ctx.market_run))
     if news:
-        tasks.append(Task("news", ctx.news_interval, ctx.news_run))
-    tasks += [Task("recompute_all", lambda now: HOUR, ctx.recompute_all_run),
+        tasks += [Task("news_watched", ctx.news_watched_interval, ctx.news_watched_run),
+                  Task("news_sweep", ctx.news_sweep_interval, ctx.news_sweep_run)]
+    tasks += [Task("manual", lambda now: 10.0, ctx.manual_run),
+              Task("recompute_all", lambda now: HOUR, ctx.recompute_all_run),
               Task("refresh", lambda now: HOUR, ctx.refresh_run),
               Task("accuracy", lambda now: HOUR, ctx.accuracy_run)]
     return Service(tasks, ctx.status, recompute=ctx.recompute)

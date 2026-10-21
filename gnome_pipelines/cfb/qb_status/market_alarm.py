@@ -77,13 +77,18 @@ class Alarm:
     move: float
 
 
-def alarms(history: pd.DataFrame, last_change: dict[int, datetime], now: datetime) -> list[Alarm]:
+def alarms(history: pd.DataFrame, last_change: dict[int, datetime], now: datetime,
+           kickoffs: dict[int, datetime] | None = None) -> list[Alarm]:
+    """Pre-kickoff moves only: once a game starts, its price moves on every play, which is not QB news."""
     if history.empty:
         return []
     h = history.assign(at=pd.to_datetime(history["at"], utc=True))
     h = h[h["at"] <= pd.Timestamp(now)]
     out = []
     for game_id, g in h.groupby("game_id"):
+        kick = (kickoffs or {}).get(int(game_id))
+        if kick is not None and pd.Timestamp(now) >= pd.Timestamp(kick):
+            continue
         g = g.sort_values("at")
         changed = last_change.get(int(game_id))
         if changed is not None and pd.Timestamp(now) - pd.Timestamp(changed) < QUIET:
