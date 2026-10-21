@@ -4,7 +4,7 @@ Bring existing tables in line with their specs (gnome_pipelines/datasets/).
 DatasetStore.evolve only adds columns, and a publish refuses a table whose columns differ from its spec, so a spec
 that drops columns needs this first. Columns the spec added are added (rows already stored read them as null). Columns
 it dropped are deleted only with drop_removed, which keeps every row. A table that is wholly derived from others, such
-as cs2_match_priors, can instead be recreated empty and republished by its writer.
+as cs2_match_priors, can instead be recreated empty (its data files deleted) and republished by its writer.
 
 A schema change makes no snapshot, and reads are pinned to the newest snapshot's schema, so readers see the new
 columns from the table's next write on.
@@ -50,7 +50,8 @@ def apply(store: DatasetStore, catalog: Catalog, namespace: str, spec: TableSpec
         store.create(spec)
         return "created"
     if recreate:
-        catalog.drop_table(ident)
+        # S3 Tables only drops a table together with its data files.
+        catalog.purge_table(ident)
         store.create(spec)
         return "recreated empty"
     if schema_plan.removed and not drop_removed:
