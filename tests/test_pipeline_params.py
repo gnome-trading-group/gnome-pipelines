@@ -22,6 +22,7 @@ def test_every_pipeline_declares_its_params():
         "cs2_bayes_fit": "CS2BayesFitParams",
         "cs2_bayes_blend": "CS2BayesBlendParams",
         "cfb_update": "CfbUpdateParams",
+        "cfb_qb_status": "QbStatusParams",
     }
 
 

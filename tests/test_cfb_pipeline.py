@@ -96,7 +96,7 @@ def test_clean_run_publishes_datasets_then_features(stubbed, monkeypatch):
     assert stubbed.published == ["cfb_games", "cfb_plays", "cfb_team_week_features"]
     assert out["rows"] == {"cfb_games": 1, "cfb_plays": 2, "cfb_team_week_features": 1} and out["warnings"] == ["soft"]
     assert out["cache_pulled"] == 3 and out["cache_pushed"] == 5 and out["cfbd_remaining"] == 2400
-    assert families.pipelines("cfb") == {"cfb_update": pipeline.CfbUpdatePipeline}
+    assert families.pipelines("cfb")["cfb_update"] is pipeline.CfbUpdatePipeline
 
 
 def test_features_and_context_refresh_can_be_skipped(stubbed, monkeypatch):
