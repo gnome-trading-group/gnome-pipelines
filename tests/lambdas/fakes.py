@@ -61,7 +61,11 @@ class Table:
 
 
 def _holds(condition: str, item: dict, names: dict, values: dict) -> bool:
-    attribute, op, rest = re.match(r"(#\w+) (=|IN) (.+)", condition).groups()
+    return all(_clause_holds(clause, item, names, values) for clause in condition.split(" AND "))
+
+
+def _clause_holds(clause: str, item: dict, names: dict, values: dict) -> bool:
+    attribute, op, rest = re.match(r"(#?\w+) (=|IN) (.+)", clause).groups()
     current = item.get(names.get(attribute, attribute))
     allowed = [values[v.strip()] for v in rest.strip("()").split(",")]
     return current in allowed

@@ -2,29 +2,16 @@
 
 Invoked by EventBridge Scheduler ({"pipeline_name", "trigger": "scheduled", "schedule", "parameters"}) and by
 the API Lambda ({"pipeline_name", "trigger": "manual", "parameters"}). A run's parameters are its schedule's
-or the caller's, over the pipeline's own defaults; its task size is the pipeline's declared resources, and its
-task definition is its family's, whose image holds only that family's dependencies.
+or the caller's, over the pipeline's own defaults.
 """
 from __future__ import annotations
 
-import json
-import os
 import uuid
 from datetime import datetime, timezone
 
-import boto3
-
 from params import problems
 from store import now, pipeline, run_key, table
-
-CLUSTER_ARN = os.environ["CLUSTER_ARN"]
-# {family: task definition ARN}, one per family image.
-TASK_DEFINITIONS = json.loads(os.environ["TASK_DEFINITIONS"])
-SUBNET_IDS = os.environ["SUBNET_IDS"].split(",")
-SECURITY_GROUP_ID = os.environ["SECURITY_GROUP_ID"]
-CONTAINER_NAME = "pipeline"
-
-ecs = boto3.client("ecs")
+from tasks import launch, task_definition
 
 
 class Rejected(Exception):
@@ -52,8 +39,7 @@ def start_run(pipeline_name: str, params: dict, trigger: str, schedule: str | No
     found = problems(declared["params_schema"], params)
     if found:
         raise Rejected(400, "Invalid parameters: " + "; ".join(found))
-    task_definition = TASK_DEFINITIONS.get(declared.get("family"))
-    if task_definition is None:
+    if task_definition(declared) is None:
         raise Rejected(500, f"No task definition for {pipeline_name}'s family {declared.get('family')!r}")
 
     run_id = f"{datetime.now(timezone.utc):%Y%m%dT%H%M%S}-{uuid.uuid4().hex[:8]}"
@@ -70,29 +56,7 @@ def start_run(pipeline_name: str, params: dict, trigger: str, schedule: str | No
         record["schedule"] = schedule
     table.put_item(Item=record)
 
-    cpu, memory = declared["resources"]["cpu"], declared["resources"]["memory"]
-    started = ecs.run_task(
-        cluster=CLUSTER_ARN,
-        taskDefinition=task_definition,
-        launchType="FARGATE",
-        networkConfiguration={"awsvpcConfiguration": {
-            "subnets": SUBNET_IDS, "securityGroups": [SECURITY_GROUP_ID], "assignPublicIp": "ENABLED",
-        }},
-        overrides={
-            "containerOverrides": [{
-                "name": CONTAINER_NAME,
-                "cpu": cpu,
-                "memory": memory,
-                "environment": [
-                    {"name": "PIPELINE_NAME", "value": pipeline_name},
-                    {"name": "RUN_ID", "value": run_id},
-                    {"name": "PIPELINE_PARAMS", "value": json.dumps(params)},
-                ],
-            }],
-            "cpu": str(cpu),
-            "memory": str(memory),
-        },
-    )
+    started = launch(pipeline_name, run_id, params, declared)
     if not started["tasks"]:
         # No task means no stopped event either, so the run would sit at PENDING forever.
         error = f"ECS didn't start the task: {started['failures']}"

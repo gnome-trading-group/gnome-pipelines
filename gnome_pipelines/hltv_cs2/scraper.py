@@ -434,15 +434,20 @@ def _parse_h2h(soup: BeautifulSoup, match_id: int, match_date) -> tuple[dict, li
 
 def _parse_lineups(soup: BeautifulSoup) -> list[list[dict]]:
     """
-    The announced starting five per team, with AWP/IGL roles where HLTV marks them.
+    The announced starting five per team, with AWP/IGL roles and HLTV's substitute label where it marks them.
 
     This is the honest source for roster features. Rosters were previously derived
     from the per-map stats tables, which only exist once the match is over — so a
     roster feature built from them could never have been available at prediction
-    time. The lineup box is rendered before the match starts.
+    time. The lineup box is rendered before the match starts, substitute labels included.
+
+    HLTV labels a player "Substitute" when he isn't on the team's registered roster (a stand-in); a team's own
+    rotating or registered-substitute players are not labelled.
     """
     out: list[list[dict]] = []
     for box in soup.select(".lineups .lineup")[:2]:
+        team_link = box.select_one(".box-headline a[href*='/team/']")
+        box_team_id = _href_id(team_link) if team_link else None
         players = []
         for cell in box.select(".player"):
             # completed pages link each photo to the player; upcoming and live pages
@@ -468,19 +473,32 @@ def _parse_lineups(soup: BeautifulSoup) -> list[list[dict]]:
             players.append({
                 "player_id": player_id,
                 "player_name": name,
+                "team_id": box_team_id,
                 "is_awp": cell.select_one(".role-pill--awp") is not None,
                 "is_igl": cell.select_one(".role-pill--igl") is not None,
+                "is_standin": cell.select_one(".lineup-standin") is not None,
+                "country": _flag(cell.select_one("img.flag")),
             })
-        seen, unique = set(), []
+        # Each player has a photo cell and a name cell; the labels can sit on either.
+        merged: dict[int, dict] = {}
         for pl in players:
-            if pl["player_id"] in seen:
-                continue
-            seen.add(pl["player_id"])
-            unique.append(pl)
-        out.append(unique)
+            if pl["player_id"] in merged:
+                first = merged[pl["player_id"]]
+                for flag in ("is_awp", "is_igl", "is_standin"):
+                    first[flag] = first[flag] or pl[flag]
+                first["player_name"] = first["player_name"] or pl["player_name"]
+                first["country"] = first["country"] or pl["country"]
+            else:
+                merged[pl["player_id"]] = dict(pl)
+        out.append(list(merged.values()))
     while len(out) < 2:
         out.append([])
     return out
+
+
+def _flag(img) -> str | None:
+    """A flag image's country (or region, e.g. "Europe" for an international team); None without one."""
+    return (img.get("title") or img.get("alt") or None) if img else None
 
 
 def _int_or_none(value) -> int | None:
@@ -538,6 +556,7 @@ def _parse_match_header(soup: BeautifulSoup, match_id: int) -> dict | None:
     team_boxes = soup.select(".team")
     team_names = []
     team_ids = []
+    team_countries = [_flag(box.select_one(f"img.team{i + 1}")) for i, box in enumerate(team_boxes[:2])]
     for box in team_boxes[:2]:
         link = box.select_one("a[href*='/team/']")
         if link:
@@ -614,11 +633,30 @@ def _parse_match_header(soup: BeautifulSoup, match_id: int) -> dict | None:
     ]
 
     return {
-        "team_names": team_names, "team_ids": team_ids, "ranks": ranks, "vrs_ranks": vrs_ranks,
+        "team_names": team_names, "team_ids": team_ids, "team_countries": team_countries, "ranks": ranks, "vrs_ranks": vrs_ranks,
         "event_name": event_name, "fmt": fmt, "match_time": match_time, "match_date": match_date,
         "veto": veto, "picked_maps": picked_maps, "lineups": lineups, "h2h_scalars": h2h_scalars,
         "h2h_rows": h2h_rows, "form_rows": form_rows, "event_context": event_context, "veto_rows": veto_rows,
     }
+
+
+def lineup_rows(h: dict, match_id: int) -> list[dict]:
+    """One cs2_match_lineups row per player in the lineup box, in HLTV's order; the box's own team link names the
+    team, falling back to the header's team in the same position."""
+    rows = []
+    for side, players in enumerate(h["lineups"][:2]):
+        for slot, pl in enumerate(players):
+            team_id = pl.get("team_id") or h["team_ids"][side]
+            if team_id is None:
+                continue
+            rows.append({
+                "match_id": match_id, "match_date": h["match_date"], "team_id": team_id,
+                "team_name": h["team_names"][side] if team_id == h["team_ids"][side] else None,
+                "player_id": pl["player_id"], "player_name": pl["player_name"], "slot": slot,
+                "is_standin": pl.get("is_standin", False), "is_awp": pl["is_awp"], "is_igl": pl["is_igl"],
+                "country": pl.get("country"),
+            })
+    return rows
 
 
 def _series_fields(h: dict, match_id: int, stars: int) -> dict:
@@ -636,6 +674,8 @@ def _series_fields(h: dict, match_id: int, stars: int) -> dict:
         "team_a_id": h["team_ids"][0],
         "team_b_name": h["team_names"][1],
         "team_b_id": h["team_ids"][1],
+        "team_a_country": h["team_countries"][0],
+        "team_b_country": h["team_countries"][1],
         "team_a_rank": h["ranks"][0],
         "team_b_rank": h["ranks"][1],
         "team_a_vrs_rank": h["vrs_ranks"][0],
@@ -778,7 +818,8 @@ def parse_match_detail_html(soup: BeautifulSoup, match_id: int, stars: int = 0) 
                 series_b += 1
 
         return {"rows": rows, "players": player_rows, "veto": h["veto_rows"],
-                "h2h": h["h2h_rows"], "recent_form": h["form_rows"], "demo_url": demo_url}
+                "h2h": h["h2h_rows"], "recent_form": h["form_rows"], "demo_url": demo_url,
+                "lineups": lineup_rows(h, match_id)}
 
     except Exception as exc:
         logger.warning("Failed to parse match %d: %s", match_id, exc)
@@ -844,6 +885,7 @@ def parse_upcoming_match_html(soup: BeautifulSoup, match_id: int, stars: int = 0
         "veto_known": bool(h["veto_rows"]),
         "h2h": h["h2h_rows"],
         "recent_form": h["form_rows"],
+        "lineups": lineup_rows(h, match_id),
     }
 
 

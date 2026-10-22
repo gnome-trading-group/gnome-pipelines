@@ -36,10 +36,11 @@ def publish(spec: TableSpec, rows: list[dict] | pd.DataFrame) -> None:
 
 def publish_match_data(match_rows: list[dict], demo_rows: list[dict], player_rows: list[dict] | None = None, veto_rows: list[dict] | None = None,
                         h2h_rows: list[dict] | None = None,
-                        form_rows: list[dict] | None = None) -> None:
+                        form_rows: list[dict] | None = None, lineup_rows: list[dict] | None = None) -> None:
     publish(cs2.MATCH_HISTORY, match_rows)
     publish(cs2.PLAYER_MAP_STATS, player_rows or [])
     publish(cs2.MATCH_VETO, veto_rows or [])
+    publish(cs2.MATCH_LINEUPS, lineup_rows or [])
     # A meeting on a map outside the pool (a forfeit's "Default", a retired map) parses with no
     # map_name, but still counts toward the head-to-head features and map_name is part of the key.
     # The migrated table stores those as "", so live rows must too or they'd land under new keys.
@@ -65,11 +66,12 @@ def publish_match_data(match_rows: list[dict], demo_rows: list[dict], player_row
 def publish_priors() -> int:
     """Rebuild cs2_match_priors from everything published so far; returns the row count."""
     ds = dataset_store()
-    # The harvested blocks (player form, veto, page H2H) need their datasets; without
-    # them build_priors still runs but publishes those features blank.
+    # The harvested blocks (player skill's stand-ins, roster, veto, page H2H) need their datasets;
+    # without them build_priors still runs but publishes those features blank.
     priors = build_priors(
         ds.load(cs2.MATCH_HISTORY.name), ds.load(cs2.TEAM_RANKINGS.name),
-        player_stats=ds.load(cs2.PLAYER_MAP_STATS.name),
+        lineups=ds.load(cs2.MATCH_LINEUPS.name),
+        roster_moves=ds.load(cs2.ROSTER_MOVES.name),
         veto=ds.load(cs2.MATCH_VETO.name),
         h2h=ds.load(cs2.H2H_HISTORY.name),
     )
