@@ -2,6 +2,9 @@
 
     AWS_PROFILE=... AWS_DEFAULT_REGION=us-east-1 poetry run python -m gnome_pipelines.cfb.qb_status.service [--once]
 
+X_BEARER_TOKEN turns on X search and ANTHROPIC_API_KEY has Claude read posts and headlines; without the key they are
+read by rules and wait for review. Which claims apply on their own is autoapply's decision.
+
 Reads cfb_games, cfb_rosters and cfb_passers from the research catalog (read-only) and writes the QB status tables to a
 local warehouse unless --prod. If the wall clock jumps (the laptop slept), it logs a gap and polls every source at
 once; whatever it finds is stamped with the wake time, never backdated.
@@ -20,13 +23,15 @@ import requests
 from gnomepy.data import DatasetStore
 from pyiceberg.expressions import EqualTo
 
+from gnome_pipelines.cfb.qb_status.autoapply import credibility_for, decide
 from gnome_pipelines.cfb.qb_status.availability import CONFERENCES, fetch_conference, report_arrivals, report_evidence
 from gnome_pipelines.cfb.qb_status.backfill import capture_evidence
 from gnome_pipelines.cfb.qb_status.candidates import candidates, game_starters, next_game, with_roster_ids
 from gnome_pipelines.cfb.qb_status.crosswalk import MATCH_OK, PlayerIndex, TeamIndex, _surname, players_frame
 from gnome_pipelines.cfb.qb_status.engine import team_status
 from gnome_pipelines.cfb.qb_status.evidence import Evidence, evidence_id
-from gnome_pipelines.cfb.qb_status.extract import RuleExtractor
+from gnome_pipelines.cfb.qb_status.extract import (ClaudeExtractor, ExtractionUnavailable, Extractor, NotConfigured,
+                                                   RuleExtractor)
 from gnome_pipelines.cfb.qb_status.health import (health_report, health_row, kickoff_accuracy, news_lag_rows,
                                                    report_lag_rows)
 from gnome_pipelines.cfb.qb_status.market_alarm import EVENTS, SERIES, Alarm, alarms, kalshi_home_probs, missed_news
@@ -190,7 +195,8 @@ class Context:
     """Everything the real pollers share: the research data, indexes, watches and in-memory market history."""
 
     def __init__(self, research: DatasetStore, status: StatusStore, season: int, cache_dir: Path | None = None,
-                 x: XSource | None = None, x_budget: XBudget | None = None) -> None:
+                 x: XSource | None = None, x_budget: XBudget | None = None,
+                 extractor: Extractor | None = None) -> None:
         self.research, self.status, self.season = research, status, season
         self.cache_dir = Path(cache_dir or CACHE_DIR)
         self.x = x
@@ -200,6 +206,8 @@ class Context:
         self.x_lookbacks: list[int] = []
         self.x_lookback_at: dict[int, datetime] = {}
         self.x_blocked_day: str | None = None
+        self.extractor, self.rules = extractor or RuleExtractor(), RuleExtractor()
+        self.fallback_at: datetime | None = None
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
         self.live: list[str] = []
@@ -248,13 +256,27 @@ class Context:
             self.status.put_players(players_frame(self.players[self.season]))
         except Exception as e:
             self.status.put_health([health_row("source_error", utcnow(), f"players: {type(e).__name__}: {e}")])
+        self.x_registry = Registry(self.status.sources())
         if self.x is not None:
             self._refresh_x(utcnow())
 
+    def _read(self, read: Callable[[Extractor], list[Evidence]], now: datetime) -> list[Evidence]:
+        """Read with the model, or with rules when it can't (an API error or its daily cap), saying so at most hourly;
+        then decide which claims apply on their own."""
+        try:
+            found = read(self.extractor)
+        except ExtractionUnavailable as e:
+            if self.fallback_at is None or now - self.fallback_at >= timedelta(hours=1):
+                self.fallback_at = now
+                self.status.put_health([health_row("extractor_fallback", now, f"{self.extractor.name}: {e}")])
+            found = read(self.rules)
+        if not found:
+            return found
+        return decide(found, self.status.evidence(), credibility_for(self.x_registry), now)
+
     # --- X ---------------------------------------------------------------------------------------------------------
     def _refresh_x(self, now: datetime) -> None:
-        """Rebuild the registry, each team's QB names and the sweep queries (hourly, with the research refresh)."""
-        self.x_registry = Registry(self.status.sources())
+        """Rebuild each team's QB names and the sweep queries (hourly, with the research refresh)."""
         index = self.players[self.season]
         names = dict(zip(self.rosters["player_id"].astype(str), zip(self.rosters["first_name"], self.rosters["last_name"])))
         self.x_team_ids, self.x_qbs, self.x_frames = {}, {}, {}
@@ -285,8 +307,9 @@ class Context:
                                                f"${self.x_budget.daily_alert * 0.005:.2f}", self.x_budget.spent_usd())])
         if posts and resume:
             self.x_budget.set_since(q.key, max(posts, key=lambda p: int(p["id"]))["id"])
-        return posts_to_evidence(posts, q, self.x_registry, self.x_frames, self.x_team_ids, now,
-                                 game_for=lambda tid: next_game(tid, now, self.games))
+        return self._read(lambda ex: posts_to_evidence(posts, q, self.x_registry, self.x_frames, self.x_team_ids, now,
+                                                       game_for=lambda tid: next_game(tid, now, self.games),
+                                                       extractor=ex), now)
 
     def x_sweep_interval(self, now: datetime) -> float:
         return X_SWEEP_EVERY / max(len(self.x_queries), 1)
@@ -488,7 +511,8 @@ class Context:
         xml = self.session.get(rss_url(name), timeout=20).text
         fresh = [i for i in parse_rss(xml) if i["published"] is None or now - i["published"] <= NEWS_MAX_AGE]
         qbs = self.players[self.season].qbs(tid)
-        return news_evidence(fresh, name, tid, qbs, RuleExtractor(), now, game_id=next_game(tid, now, self.games))
+        return self._read(lambda ex: news_evidence(fresh, name, tid, qbs, ex, now,
+                                                   game_id=next_game(tid, now, self.games)), now)
 
     def news_watched_interval(self, now: datetime) -> float:
         n = self.watched_count(now)
@@ -547,6 +571,9 @@ class Context:
 
     def refresh_run(self, now: datetime) -> list[Evidence]:
         self.refresh()
+        usd = getattr(self.extractor, "usd", None)
+        if usd is not None:
+            self.status.put_health([health_row("claude_spend", now, f"{self.extractor.name} reads since start", usd())])
         return []
 
     def recompute_all_run(self, now: datetime) -> list[Evidence]:
@@ -595,6 +622,7 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--no-market", action="store_true")
     ap.add_argument("--no-news", action="store_true")
     ap.add_argument("--no-x", action="store_true", help="don't search X even if a key is configured")
+    ap.add_argument("--no-claude", action="store_true", help="read posts and headlines with rules only")
     ap.add_argument("--load-registry", type=Path, metavar="CSV",
                     help="load the reviewed X reporter registry into the sources table and exit")
     ap.add_argument("--health", action="store_true", help="print the last 7 days' health summary and exit")
@@ -611,7 +639,13 @@ def main(argv: list[str] | None = None) -> None:
         print(f"loaded {len(status.sources())} X sources")
         return
     x = None if a.no_x else XSource(budget=ReadBudget(10**9))   # XBudget is the real governor
-    ctx = Context(DatasetStore(), status, season, x=x if x is not None and x.enabled else None)
+    extractor = None
+    if not a.no_claude:
+        try:
+            extractor = ClaudeExtractor()
+        except NotConfigured:
+            print("Claude is off: no ANTHROPIC_API_KEY; posts and headlines are read by rules and wait for review")
+    ctx = Context(DatasetStore(), status, season, x=x if x is not None and x.enabled else None, extractor=extractor)
     if x is not None and not x.enabled:
         print("X is off: no X_BEARER_TOKEN in the environment and no gnome/pipelines/x secret")
     if a.capture_dir:

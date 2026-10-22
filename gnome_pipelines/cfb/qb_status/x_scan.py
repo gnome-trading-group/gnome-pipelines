@@ -36,6 +36,7 @@ MONTHLY_USD = 25.0
 DAILY_ALERT_USD = 1.5
 LOOKBACK_POSTS = 50
 CREDIBILITY = {"normal": 1.0, "low": 0.5}
+UNLISTED_CREDIBILITY = 0.25            # accounts found by gap and lookback searches of anyone
 QB_WORDS = ["QB", "quarterback"]
 STATUS = ["injury", "injured", "hurt", "questionable", "doubtful", "ruled out", "won't play", "will not play",
           "will start", "won't start", "expected to start", "game-time", "left the game", "concussion", "cleared",
@@ -92,7 +93,7 @@ class Registry:
         return list(self._teams.get(handle, []))
 
     def credibility(self, handle: str) -> float:
-        return self._cred.get(handle, 1.0)
+        return self._cred.get(handle, UNLISTED_CREDIBILITY)
 
 
 def _or(items: list[str]) -> str:
@@ -264,10 +265,11 @@ def posts_to_evidence(posts: list[dict], query: Query, registry: Registry, qb_fr
             tid = team_ids.get(team)
             if tid is None:
                 continue
-            claims = extractor.extract(p.get("text", ""), tid, qbs)
+            claims = extractor.extract(p.get("text", ""), tid, qbs, team=team)
             if claims:
                 names = dict(zip(qbs["player_id"].astype(str), qbs["name"]))
-                for e in x_evidence(p, handle, claims, team, tid, now, game_id=game_for(tid)):
+                for e in x_evidence(p, handle, claims, team, tid, now, game_id=game_for(tid),
+                                    extractor=extractor.name):
                     e.player_raw = names.get(str(e.player_id))
                     out.append(e)
     return out

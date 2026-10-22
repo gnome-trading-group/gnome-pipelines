@@ -1,4 +1,4 @@
-"""News RSS: Google News search per team, read through an extractor into pending-review evidence."""
+"""News RSS: Google News search per team, read through an extractor into pending evidence (autoapply decides)."""
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
@@ -45,12 +45,12 @@ def news_evidence(items: list[dict], team: str, team_id: int, qbs: pd.DataFrame,
     season = seen_at.year if seen_at.month >= 7 else seen_at.year - 1
     out = []
     for item in items:
-        for player_id, status, hedge, confidence in extractor.extract(item["title"], team_id, qbs):
+        for player_id, status, hedge, confidence in extractor.extract(item["title"], team_id, qbs, team=team):
             out.append(Evidence(
                 evidence_id=evidence_id("news", item["guid"], player_id, status), source_type="news",
                 source_id=item["guid"], source_org=_publisher(item["title"]), first_seen_at=seen_at, team=team,
                 status=status, season=season, published_at=item["published"], team_id=team_id,
                 player_raw=names.get(player_id), player_id=player_id, match_confidence=1.0, game_id=game_id,
-                hedge=hedge, paraphrase=item["title"][:PARAPHRASE_LEN], url=item["link"], extractor="rules",
+                hedge=hedge, paraphrase=item["title"][:PARAPHRASE_LEN], url=item["link"], extractor=extractor.name,
                 extraction_confidence=confidence, review_state="pending"))
     return out

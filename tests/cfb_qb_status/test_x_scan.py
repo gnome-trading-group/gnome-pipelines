@@ -178,3 +178,29 @@ def test_posts_without_a_named_qb_produce_nothing():
 def test_insider_posts_need_the_full_name_not_just_a_surname():
     assert to_ev([post("103", "NatOne", "Stone will not play Saturday.")], kind="national",
                  teams=("Testville State", "Example Tech")) == []
+
+
+class Recording:
+    name = "fake-model"
+
+    def __init__(self):
+        self.teams = []
+
+    def extract(self, text, team_id, qbs, team=None):
+        self.teams.append(team)
+        return [(str(qbs["player_id"].iloc[0]), "out", "confirmed", 0.9)]
+
+
+def test_posts_are_read_with_the_team_name_and_labelled_with_the_reader():
+    from gnome_pipelines.cfb.qb_status.x_scan import Query
+    rec = Recording()
+    reg = Registry(registry_frame(pd.DataFrame(CSV_ROWS), vetted_by="user", now=T0))
+    ev = posts_to_evidence([post("104", "TestvilleBeat", "Stone will not play.")],
+                           Query(key="k", text="q", kind="sweep", teams=("Testville State",)), reg, QB_FRAMES,
+                           TEAM_IDS, T0, game_for=lambda tid: 77, extractor=rec)
+    assert rec.teams == ["Testville State"] and [e.extractor for e in ev] == ["fake-model"]
+
+
+def test_unlisted_accounts_get_low_credibility(registry):
+    assert registry.credibility("TestvilleBeat") == 1.0 and registry.credibility("TestvilleSite") == 0.5
+    assert registry.credibility("SomeoneElse") == 0.25

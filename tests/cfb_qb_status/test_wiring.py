@@ -6,6 +6,7 @@ from gnomepy.data import CatalogConfig, DatasetStore
 
 from gnome_pipelines.cfb.qb_status.crosswalk import PlayerIndex
 from gnome_pipelines.cfb.qb_status.evidence import Evidence
+from gnome_pipelines.cfb.qb_status.extract import ExtractionUnavailable
 from gnome_pipelines.cfb.qb_status.market_alarm import Alarm
 from gnome_pipelines.cfb.qb_status.review import decide
 from gnome_pipelines.cfb.qb_status.service import (Context, build_service, fbs_games, fresh_alarms, resolve_flags)
@@ -159,7 +160,7 @@ class FakeX:
         return R()
 
 
-def x_context(tmp_path, posts=None, monthly_usd=25.0):
+def x_context(tmp_path, posts=None, monthly_usd=25.0, extractor=None):
     from gnome_pipelines.cfb.qb_status.x_scan import XBudget, registry_frame
     from gnome_pipelines.cfb.qb_status.x_source import XSource
     status = StatusStore(DatasetStore(CatalogConfig(local_warehouse=tmp_path / "wh")))
@@ -170,7 +171,7 @@ def x_context(tmp_path, posts=None, monthly_usd=25.0):
     fake = FakeX(posts)
     x = XSource(transport=fake, secret_fn=lambda *a: "token")
     ctx = Context(ResearchWithPlays(fail=False), status, 2026, cache_dir=tmp_path / "cache", x=x,
-                  x_budget=XBudget(tmp_path / "x.json", monthly_usd=monthly_usd))
+                  x_budget=XBudget(tmp_path / "x.json", monthly_usd=monthly_usd), extractor=extractor)
     return ctx, fake, status
 
 
@@ -233,3 +234,64 @@ def test_load_registry_command_fills_the_sources_table(tmp_path, monkeypatch):
     got = StatusStore(open_store(False)).sources().set_index("handle")
     assert sorted(got.index) == ["NatOne", "TestvilleBeat"] and got.loc["NatOne", "credibility"] == 0.5
     assert got.loc["TestvilleBeat", "vetted_by"] == "user"
+
+
+class FakeReader:
+    name = "claude-haiku-5-5"
+
+    def __init__(self, fail=False):
+        self.fail = fail
+
+    def extract(self, text, team_id, qbs, team=None):
+        if self.fail:
+            raise ExtractionUnavailable("APIConnectionError: down")
+        return [("9000001", "out", "confirmed", 0.95)] if "Stone" in text else []
+
+
+BEAT_POST = {"id": "600", "handle": "TestvilleBeat", "text": "Coach says Stone will not play Saturday.",
+             "created_at": "2026-10-23T19:00:00Z"}
+
+
+def test_a_credible_reporters_plain_post_applies_without_review(tmp_path):
+    ctx, _, _ = x_context(tmp_path, [BEAT_POST], extractor=FakeReader())
+    ev = run_sweep(ctx, T0 - timedelta(days=1))
+    assert [(e.review_state, e.reviewer, e.extractor) for e in ev] == [("auto", "auto:credible", "claude-haiku-5-5")]
+
+
+def test_when_the_model_is_unavailable_posts_are_read_by_rules_and_wait(tmp_path):
+    ctx, _, status = x_context(tmp_path, [BEAT_POST], extractor=FakeReader(fail=True))
+    ev = run_sweep(ctx, T0 - timedelta(days=1))
+    assert [(e.review_state, e.extractor) for e in ev] == [("pending", "rules")]
+    assert "extractor_fallback" in set(status.health()["kind"])
+
+
+class FakeSession:
+    def __init__(self, xml):
+        self.xml = xml
+
+    def get(self, url, timeout):
+        return type("R", (), {"text": self.xml})()
+
+
+def test_a_headline_that_matches_the_official_report_applies(tmp_path):
+    now = T0 - timedelta(days=1)
+    ctx, _, status = x_context(tmp_path, extractor=FakeReader())
+    status.add_evidence([Evidence(evidence_id="off", source_type="official_report", source_id="cell",
+                                  source_org="SEC", first_seen_at=now - timedelta(hours=2), team="Testville State",
+                                  status="out", season=2026, team_id=501, player_id="9000001", game_id=1,
+                                  report_slot="Initial")])
+    ctx.session = FakeSession("""<?xml version="1.0"?><rss><channel><item>
+<title>Avery Stone ruled out vs. Example Tech - The Example Ledger</title><link>https://example.com/a</link>
+<guid>g1</guid><pubDate>Fri, 23 Oct 2026 19:00:00 GMT</pubDate></item></channel></rss>""")
+    ev = ctx._news_for(501, now)
+    assert [(e.source_type, e.review_state, e.reviewer) for e in ev] == [("news", "auto", "auto:official")]
+
+
+def test_the_hourly_refresh_records_what_the_model_has_cost(tmp_path):
+    class Priced(FakeReader):
+        def usd(self):
+            return 0.0123
+    ctx, _, status = x_context(tmp_path, extractor=Priced())
+    ctx.refresh_run(T0)
+    spend = status.health().set_index("kind").loc["claude_spend"]
+    assert spend["value"] == pytest.approx(0.0123) and "claude-haiku-5-5" in spend["detail"]

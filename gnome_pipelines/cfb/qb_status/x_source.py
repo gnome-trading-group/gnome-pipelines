@@ -98,7 +98,7 @@ class XSource:
 
 
 def x_evidence(post: dict, handle: str, claims: list[tuple[str, str, str, float]], team: str, team_id: int,
-               seen_at: datetime, game_id: int | None = None) -> list[Evidence]:
+               seen_at: datetime, game_id: int | None = None, extractor: str = "rules") -> list[Evidence]:
     published = datetime.fromisoformat(post["created_at"].replace("Z", "+00:00")) if post.get("created_at") else None
     season = seen_at.year if seen_at.month >= 7 else seen_at.year - 1
     out = []
@@ -108,6 +108,6 @@ def x_evidence(post: dict, handle: str, claims: list[tuple[str, str, str, float]
             source_id=str(post["id"]), source_org=handle, first_seen_at=seen_at, team=team, status=status,
             season=season, published_at=published, team_id=team_id, player_id=player_id, match_confidence=1.0,
             game_id=game_id, hedge=hedge, paraphrase=f"@{handle}: {status.replace('_', ' ')} ({hedge})"[:140],
-            url=f"https://x.com/{handle}/status/{post['id']}", extractor="rules", extraction_confidence=confidence,
+            url=f"https://x.com/{handle}/status/{post['id']}", extractor=extractor, extraction_confidence=confidence,
             review_state="pending"))
     return out
