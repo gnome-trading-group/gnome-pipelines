@@ -36,6 +36,9 @@ from gnome_pipelines.cfb.qb_status.schedule import (WINDOW_AFTER, expected_relea
                                                      schedule_rows)
 from gnome_pipelines.cfb.qb_status.store import StatusStore, open_store
 from gnome_pipelines.cfb.qb_status.watches import update_watches, watched_teams
+from gnome_pipelines.cfb.qb_status.x_scan import (LOOKBACK_POSTS, Query, Registry, XBudget, lookback_query,
+                                                   posts_to_evidence, registry_frame, sweep_queries, watch_queries)
+from gnome_pipelines.cfb.qb_status.x_source import ReadBudget, XSource
 
 CONF_CODES = {"SEC": "SEC", "Big Ten": "B10", "Big 12": "B12", "ACC": "ACC", "American Athletic": "American",
               "Mid-American": "MAC"}
@@ -129,6 +132,12 @@ class Service:
 
 
 CACHE_DIR = Path.home() / ".cache" / "gnome-pipelines" / "qb_status_research_cache"
+X_STATE = Path.home() / ".cache" / "gnome-pipelines" / "qb_status_x_state.json"
+X_SWEEP_EVERY = 180.0       # a full sweep of every team query; empty polls cost nothing
+X_WATCH_EVERY = 60.0
+X_FIRST_SWEEP = timedelta(hours=24)    # a query we haven't run before looks back this far, not 7 days
+X_FIRST_WATCH = timedelta(hours=72)
+X_LOOKBACK_GAP = timedelta(hours=6)    # at most one alarm lookback per team in this window
 RESEARCH_TABLES = ("cfb_games", "cfb_rosters", "cfb_passers")
 
 
@@ -180,9 +189,17 @@ def fresh_alarms(found: list[Alarm], alarmed_until: dict[int, datetime], now: da
 class Context:
     """Everything the real pollers share: the research data, indexes, watches and in-memory market history."""
 
-    def __init__(self, research: DatasetStore, status: StatusStore, season: int, cache_dir: Path | None = None) -> None:
+    def __init__(self, research: DatasetStore, status: StatusStore, season: int, cache_dir: Path | None = None,
+                 x: XSource | None = None, x_budget: XBudget | None = None) -> None:
         self.research, self.status, self.season = research, status, season
         self.cache_dir = Path(cache_dir or CACHE_DIR)
+        self.x = x
+        self.x_budget = x_budget or (XBudget(X_STATE) if x is not None else None)
+        self.x_queries: list[Query] = []
+        self.x_cursor, self.x_watch_cursor = 0, 0
+        self.x_lookbacks: list[int] = []
+        self.x_lookback_at: dict[int, datetime] = {}
+        self.x_blocked_day: str | None = None
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
         self.live: list[str] = []
@@ -231,6 +248,92 @@ class Context:
             self.status.put_players(players_frame(self.players[self.season]))
         except Exception as e:
             self.status.put_health([health_row("source_error", utcnow(), f"players: {type(e).__name__}: {e}")])
+        if self.x is not None:
+            self._refresh_x(utcnow())
+
+    # --- X ---------------------------------------------------------------------------------------------------------
+    def _refresh_x(self, now: datetime) -> None:
+        """Rebuild the registry, each team's QB names and the sweep queries (hourly, with the research refresh)."""
+        self.x_registry = Registry(self.status.sources())
+        index = self.players[self.season]
+        names = dict(zip(self.rosters["player_id"].astype(str), zip(self.rosters["first_name"], self.rosters["last_name"])))
+        self.x_team_ids, self.x_qbs, self.x_frames = {}, {}, {}
+        for tid in self.fbs_ids:
+            team = self.team_names[tid]
+            self.x_team_ids[team] = tid
+            cands = self.team_candidates(tid, now)
+            ordered = cands.sort_values("base", ascending=False)["player_id"].astype(str) if len(cands) else []
+            self.x_qbs[team] = [(str(f), str(l)) for f, l in (names[p] for p in ordered if p in names)
+                                if pd.notna(f) and pd.notna(l)][:4]
+            self.x_frames[team] = index.qbs(tid)[["player_id", "name"]]
+        self.x_queries = sweep_queries(self.x_registry, self.x_qbs, [self.team_names[t] for t in self.fbs_ids])
+
+    def _x_poll(self, q: Query, now: datetime, first_back: timedelta, max_results: int = 100,
+                sort_order: str | None = None, resume: bool = True) -> list[Evidence]:
+        if not self.x_budget.allow(q.kind, now):
+            day = now.strftime("%Y-%m-%d")
+            if self.x_blocked_day != day:
+                self.x_blocked_day = day
+                self.status.put_health([health_row("x_budget_stop", now, f"X {q.kind} paused: "
+                                                   f"${self.x_budget.spent_usd():.2f} spent this month")])
+            return []
+        since = self.x_budget.since(q.key) if resume else None
+        posts = self.x.poll(q.text, since_id=since, kind=q.kind, start_time=None if since else now - first_back,
+                            max_results=max_results, sort_order=sort_order)
+        if self.x_budget.charge(len(posts), now):
+            self.status.put_health([health_row("x_spend_alert", now, f"X spend today passed "
+                                               f"${self.x_budget.daily_alert * 0.005:.2f}", self.x_budget.spent_usd())])
+        if posts and resume:
+            self.x_budget.set_since(q.key, max(posts, key=lambda p: int(p["id"]))["id"])
+        return posts_to_evidence(posts, q, self.x_registry, self.x_frames, self.x_team_ids, now,
+                                 game_for=lambda tid: next_game(tid, now, self.games))
+
+    def x_sweep_interval(self, now: datetime) -> float:
+        return X_SWEEP_EVERY / max(len(self.x_queries), 1)
+
+    def x_sweep_run(self, now: datetime) -> list[Evidence]:
+        if not self.x_queries:
+            return []
+        q = self.x_queries[self.x_cursor % len(self.x_queries)]
+        self.x_cursor += 1
+        return self._x_poll(q, now, X_FIRST_SWEEP)
+
+    def _x_watch_queries(self, now: datetime) -> list[Query]:
+        out = []
+        for tid in sorted(watched_teams(self.watches, now)):
+            team = self.team_names.get(tid)
+            if team in self.x_qbs:
+                out += watch_queries(self.x_registry, team, self.x_qbs[team])
+        return out
+
+    def x_watch_interval(self, now: datetime) -> float:
+        n = len(self._x_watch_queries(now))
+        return X_WATCH_EVERY / n if n else X_WATCH_EVERY
+
+    def x_watch_run(self, now: datetime) -> list[Evidence]:
+        qs = self._x_watch_queries(now)
+        if not qs:
+            return []
+        q = qs[self.x_watch_cursor % len(qs)]
+        self.x_watch_cursor += 1
+        return self._x_poll(q, now, X_FIRST_WATCH)
+
+    def queue_lookback(self, tid: int, now: datetime) -> None:
+        last = self.x_lookback_at.get(tid)
+        if tid in self.x_lookbacks or (last is not None and now - last < X_LOOKBACK_GAP):
+            return
+        self.x_lookbacks.append(tid)
+        self.x_lookback_at[tid] = now
+
+    def x_lookback_run(self, now: datetime) -> list[Evidence]:
+        if not self.x_lookbacks:
+            return []
+        tid = self.x_lookbacks.pop(0)
+        team = self.team_names.get(tid)
+        if not self.x_qbs.get(team):
+            return []
+        return self._x_poll(lookback_query(team, self.x_qbs[team]), now, X_FIRST_WATCH, max_results=LOOKBACK_POSTS,
+                            sort_order="relevancy", resume=False)
 
     def upcoming_conference_games(self, now: datetime, days: int) -> pd.DataFrame:
         kick = pd.to_datetime(self.games["kickoff"], utc=True)
@@ -370,6 +473,9 @@ class Context:
                                     paraphrase=f"Kalshi moved {a.move:.2f} logit in 60 min with no QB status change",
                                     extractor="market", extraction_confidence=1.0))
             self.pending_alarms.append(a)
+            if self.x is not None:
+                for tid in (int(g["home_id"]), int(g["away_id"])):
+                    self.queue_lookback(tid, now)
         missed = missed_news(self.pending_alarms, self.last_change, now)
         self.status.put_health([health_row("missed_news", a.at, f"game {a.game_id}: market moved {a.move:.2f}",
                                            a.move, game_id=a.game_id) for a in missed])
@@ -457,6 +563,11 @@ def build_service(ctx: Context, espn: bool = True, market: bool = True, news: bo
     if news:
         tasks += [Task("news_watched", ctx.news_watched_interval, ctx.news_watched_run),
                   Task("news_sweep", ctx.news_sweep_interval, ctx.news_sweep_run)]
+    x = getattr(ctx, "x", None)
+    if x is not None and getattr(x, "enabled", False) is True:
+        tasks += [Task("x_sweep", ctx.x_sweep_interval, ctx.x_sweep_run),
+                  Task("x_watch", ctx.x_watch_interval, ctx.x_watch_run),
+                  Task("x_lookback", lambda now: 15.0, ctx.x_lookback_run)]
     tasks += [Task("manual", lambda now: 10.0, ctx.manual_run),
               Task("recompute_all", lambda now: HOUR, ctx.recompute_all_run),
               Task("refresh", lambda now: HOUR, ctx.refresh_run),
@@ -483,6 +594,9 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--no-espn", action="store_true")
     ap.add_argument("--no-market", action="store_true")
     ap.add_argument("--no-news", action="store_true")
+    ap.add_argument("--no-x", action="store_true", help="don't search X even if a key is configured")
+    ap.add_argument("--load-registry", type=Path, metavar="CSV",
+                    help="load the reviewed X reporter registry into the sources table and exit")
     ap.add_argument("--health", action="store_true", help="print the last 7 days' health summary and exit")
     ap.add_argument("--team", default="Mississippi State", help="team to print after --once")
     a = ap.parse_args(argv)
@@ -492,7 +606,14 @@ def main(argv: list[str] | None = None) -> None:
     if a.health:
         print(health_report(status.health(), now - timedelta(days=7)))
         return
-    ctx = Context(DatasetStore(), status, season)
+    if a.load_registry:
+        status.put_sources(registry_frame(pd.read_csv(a.load_registry), vetted_by="user", now=now))
+        print(f"loaded {len(status.sources())} X sources")
+        return
+    x = None if a.no_x else XSource(budget=ReadBudget(10**9))   # XBudget is the real governor
+    ctx = Context(DatasetStore(), status, season, x=x if x is not None and x.enabled else None)
+    if x is not None and not x.enabled:
+        print("X is off: no X_BEARER_TOKEN in the environment and no gnome/pipelines/x secret")
     if a.capture_dir:
         new = status.add_evidence_new(capture_evidence(a.capture_dir, ctx.teams, ctx.players, ctx.games))
         print(f"loaded {len(new)} new evidence rows from the capture")

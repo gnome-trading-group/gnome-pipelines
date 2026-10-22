@@ -228,3 +228,14 @@ def test_recompute_error_is_recorded_not_raised(tmp_path):
     svc = Service([Task("t", lambda now: 60, lambda now: [ev("a")])], s, recompute=broken)
     svc.step(T0)
     assert "recompute: KeyError" in s.health()["detail"].iloc[0]
+
+
+def test_sources_round_trip_and_republish_only_changes(tmp_path):
+    from gnome_pipelines.cfb.qb_status.x_scan import registry_frame
+    s = store(tmp_path)
+    df = registry_frame(pd.DataFrame([{"platform": "x", "handle": "TestvilleBeat", "teams": "Testville State",
+                                       "kind": "beat", "confidence": "normal"}]), vetted_by="user", now=T0)
+    s.put_sources(df)
+    s.put_sources(df.assign(added_at=pd.Timestamp(T0 + timedelta(days=1))))
+    got = s.sources()
+    assert got["handle"].tolist() == ["TestvilleBeat"] and list(got["teams"].iloc[0]) == ["Testville State"]

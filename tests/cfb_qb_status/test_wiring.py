@@ -138,3 +138,98 @@ def test_trick_play_passers_and_non_qb_report_rows_stay_out_of_the_status(tmp_pa
                                   season=2026, team_id=501, player_id="9000003", game_id=1, report_slot="Initial")])
     ctx.recompute({501}, [], now)
     assert "9000003" not in set(status.snapshots()["player_id"])
+
+
+class FakeX:
+    """Stands in for the X recent-search endpoint: records params, returns the posts it's given once."""
+
+    def __init__(self, posts=None):
+        self.calls, self.posts = [], list(posts or [])
+
+    def __call__(self, url, params, headers, timeout):
+        self.calls.append(params)
+        posts, self.posts = self.posts, []
+
+        class R:
+            status_code = 200
+
+            def json(self_inner):
+                return {"data": [{k: v for k, v in p.items() if k != "handle"} | {"author_id": "1"} for p in posts],
+                        "includes": {"users": [{"id": "1", "username": posts[0]["handle"]}]} if posts else {}}
+        return R()
+
+
+def x_context(tmp_path, posts=None, monthly_usd=25.0):
+    from gnome_pipelines.cfb.qb_status.x_scan import XBudget, registry_frame
+    from gnome_pipelines.cfb.qb_status.x_source import XSource
+    status = StatusStore(DatasetStore(CatalogConfig(local_warehouse=tmp_path / "wh")))
+    status.put_sources(registry_frame(pd.DataFrame([
+        {"platform": "x", "handle": "TestvilleBeat", "teams": "Testville State", "kind": "beat", "confidence": "normal"},
+        {"platform": "x", "handle": "NatOne", "teams": "", "kind": "national", "confidence": "normal"}]),
+        vetted_by="user", now=T0))
+    fake = FakeX(posts)
+    x = XSource(transport=fake, secret_fn=lambda *a: "token")
+    ctx = Context(ResearchWithPlays(fail=False), status, 2026, cache_dir=tmp_path / "cache", x=x,
+                  x_budget=XBudget(tmp_path / "x.json", monthly_usd=monthly_usd))
+    return ctx, fake, status
+
+
+def run_sweep(ctx, now):
+    out = []
+    for _ in range(len(ctx.x_queries)):
+        out += ctx.x_sweep_run(now)
+    return out
+
+
+def test_x_sweep_turns_a_reporters_post_into_evidence_and_resumes_from_it(tmp_path):
+    now = T0 - timedelta(days=1)
+    post = {"id": "500", "handle": "TestvilleBeat", "text": "Stone will not play Saturday.",
+            "created_at": "2026-10-23T19:00:00Z"}
+    ctx, fake, _ = x_context(tmp_path, [post])
+    ev = run_sweep(ctx, now)
+    assert [(e.player_id, e.status, e.team_id, e.source_type) for e in ev] == [("9000001", "out", 501, "x_post")]
+    assert "start_time" in fake.calls[0] and "since_id" not in fake.calls[0]
+    team_query = next(q for q in ctx.x_queries if q.kind == "sweep")
+    assert "Stone" in team_query.text and "from:TestvilleBeat" in team_query.text
+    run_sweep(ctx, now + timedelta(minutes=3))
+    assert any(c.get("since_id") == "500" for c in fake.calls)
+
+
+def test_x_budget_stops_the_sweep_before_any_call(tmp_path):
+    ctx, fake, status = x_context(tmp_path, monthly_usd=0.0)
+    assert run_sweep(ctx, T0 - timedelta(days=1)) == [] and fake.calls == []
+    assert "x_budget_stop" in set(status.health()["kind"])
+
+
+def test_an_alarm_queues_one_relevancy_lookback_per_team(tmp_path):
+    ctx, fake, _ = x_context(tmp_path)
+    now = T0 - timedelta(days=1)
+    ctx.queue_lookback(501, now)
+    ctx.queue_lookback(501, now + timedelta(minutes=5))
+    ctx.x_lookback_run(now + timedelta(minutes=6))
+    ctx.x_lookback_run(now + timedelta(minutes=7))
+    assert len(fake.calls) == 1
+    call = fake.calls[0]
+    assert call["sort_order"] == "relevancy" and call["max_results"] == 50 and '"Avery Stone"' in call["query"]
+
+
+def test_without_x_the_service_builds_no_x_tasks(tmp_path):
+    status = StatusStore(DatasetStore(CatalogConfig(local_warehouse=tmp_path / "wh")))
+    ctx = Context(ResearchWithPlays(fail=False), status, 2026, cache_dir=tmp_path / "cache")
+    names = {t.name for t in build_service(ctx, espn=False, market=False, news=False).tasks}
+    assert not any(n.startswith("x_") for n in names)
+
+
+def test_load_registry_command_fills_the_sources_table(tmp_path, monkeypatch):
+    from gnome_pipelines.cfb.qb_status import service
+    from gnome_pipelines.cfb.qb_status.store import open_store
+    csv_path = tmp_path / "registry.csv"
+    pd.DataFrame([{"platform": "x", "handle": "TestvilleBeat", "name": "T B", "teams": "Testville State",
+                   "kind": "beat", "confidence": "normal"},
+                  {"platform": "x", "handle": "NatOne", "name": "N O", "teams": "", "kind": "national",
+                   "confidence": "low"}]).to_csv(csv_path, index=False)
+    monkeypatch.setenv("QB_STATUS_WAREHOUSE", str(tmp_path / "wh"))
+    service.main(["--load-registry", str(csv_path)])
+    got = StatusStore(open_store(False)).sources().set_index("handle")
+    assert sorted(got.index) == ["NatOne", "TestvilleBeat"] and got.loc["NatOne", "credibility"] == 0.5
+    assert got.loc["TestvilleBeat", "vetted_by"] == "user"

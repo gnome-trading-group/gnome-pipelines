@@ -15,7 +15,7 @@ from pyiceberg.exceptions import NoSuchTableError
 from pyiceberg.expressions import EqualTo
 
 from gnome_pipelines.cfb.qb_status.evidence import Evidence, evidence_frame, evidence_id
-from gnome_pipelines.datasets.qb_status import EVIDENCE, HEALTH, PLAYERS, REPORT_SCHEDULE, SNAPSHOTS, WATCHES
+from gnome_pipelines.datasets.qb_status import EVIDENCE, HEALTH, PLAYERS, REPORT_SCHEDULE, SNAPSHOTS, SOURCES, WATCHES
 
 DEFAULT_WAREHOUSE = Path.home() / ".cache" / "gnome-pipelines" / "qb_status_warehouse"
 CODE_VERSION = "gnome-pipelines@qb_status"
@@ -188,3 +188,10 @@ class StatusStore:
     def put_players(self, df: pd.DataFrame) -> None:
         if not df.empty:
             self.store.publish(PLAYERS, df[PLAYERS.schema.names])
+
+    def put_sources(self, df: pd.DataFrame) -> None:
+        if not df.empty:
+            self.store.publish(SOURCES, df[SOURCES.schema.names])
+
+    def sources(self) -> pd.DataFrame:
+        return _load(self.store, SOURCES)

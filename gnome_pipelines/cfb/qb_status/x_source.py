@@ -6,7 +6,7 @@ evidence keeps the post id, the handle, our claim and a short paraphrase of the 
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Callable
 
 import requests
@@ -70,15 +70,25 @@ class XSource:
         self.budget = budget or ReadBudget(20_000)
         self._transport = transport or requests.get
 
-    def poll(self, query: str, since_id: str | None = None, kind: str = "watch") -> list[dict]:
+    def poll(self, query: str, since_id: str | None = None, kind: str = "watch", start_time: datetime | None = None,
+             max_results: int = 100, sort_order: str | None = None) -> list[dict]:
+        """One recent-search request. since_id resumes a query; a query we haven't run before starts at start_time
+        instead, so it never pays for a week of history. A rate limit or error raises, and the service retries."""
         if not self.enabled or not self.budget.allow(1, kind):
             return []
-        params = {"query": query, "max_results": 100, "tweet.fields": "created_at,author_id",
+        params = {"query": query, "max_results": max_results, "tweet.fields": "created_at,author_id",
                   "expansions": "author_id", "user.fields": "username"}
         if since_id:
             params["since_id"] = since_id
+        elif start_time is not None:
+            params["start_time"] = start_time.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        if sort_order:
+            params["sort_order"] = sort_order
         r = self._transport(SEARCH, params=params, headers={"Authorization": f"Bearer {self._token}"}, timeout=30)
         body = r.json() if hasattr(r, "json") else r
+        status = getattr(r, "status_code", 200)
+        if status >= 400:
+            raise RuntimeError(f"X search failed with HTTP {status}: {(body or {}).get('title', '')}")
         posts = body.get("data", []) or []
         users = {u["id"]: u["username"] for u in (body.get("includes") or {}).get("users", [])}
         for p in posts:
