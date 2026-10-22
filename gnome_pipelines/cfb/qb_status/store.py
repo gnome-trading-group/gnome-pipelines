@@ -56,14 +56,14 @@ def _versions(store: DatasetStore, spec) -> list[tuple[pd.Timestamp, pd.DataFram
         as_of = (at - pd.Timedelta(microseconds=1)).to_pydatetime()
 
 
-def copy_tables(src: DatasetStore, dst: DatasetStore) -> dict[str, int]:
-    """Copy every QB status table, every version at its original time, into a destination that has none of them
-    (the laptop phase's history into prod, once), so as_of reads there match the source."""
-    for spec in ALL:
+def copy_tables(src: DatasetStore, dst: DatasetStore, specs=ALL) -> dict[str, int]:
+    """Copy QB status tables, every version at its original time, into a destination that has none of them (the
+    laptop phase's history into prod, once), so as_of reads there match the source. specs leaves some out."""
+    for spec in specs:
         if not _load(dst, spec).empty:
             raise RuntimeError(f"{spec.name} already has rows in the destination; nothing copied")
     copied = {}
-    for spec in ALL:
+    for spec in specs:
         batches = _versions(src, spec)
         for at, rows in batches:
             dst.publish(spec, rows, ingested_at=at.to_pydatetime())
@@ -171,10 +171,18 @@ class StatusStore:
             self._keys.setdefault((r["game_id"], r["team_id"]), set()).add(r["player_id"])
 
     def put_snapshots(self, df: pd.DataFrame, now: datetime) -> int:
+        return len(self._publish_snapshots(df, now))
+
+    def put_snapshots_changed(self, df: pd.DataFrame, now: datetime) -> set[tuple[int, int]]:
+        """put_snapshots for any number of team-games in one commit (each costs seconds on S3 Tables); returns the
+        (game, team) pairs that changed."""
+        return {(int(r["game_id"]), int(r["team_id"])) for r in self._publish_snapshots(df, now)}
+
+    def _publish_snapshots(self, df: pd.DataFrame, now: datetime) -> list[dict]:
         """Publish changed rows. A candidate that dropped out of a team-game gets a p_start 0 row, so the latest row
         per key always sums to 1 for that team-game."""
         if df.empty:
-            return 0
+            return []
         self._seed_snapshots()
         records = df.to_dict("records")
         for (game, team), group in df.groupby(["game_id", "team_id"]):
@@ -193,7 +201,7 @@ class StatusStore:
                 self._snapshots[key] = value
         if rows:
             self.store.publish(SNAPSHOTS, pd.DataFrame(rows, columns=SNAPSHOTS.schema.names))
-        return len(rows)
+        return rows
 
     def snapshots(self, as_of: datetime | None = None) -> pd.DataFrame:
         return _load(self.store, SNAPSHOTS, as_of)

@@ -393,7 +393,7 @@ class Context:
 
     def recompute(self, teams: set[int], new: list[Evidence], now: datetime) -> None:
         evidence = self.status.evidence()
-        changed = set()
+        frames = []
         for tid in teams:
             name = self.team_names.get(tid)
             game = next_game(tid, now, self.games) if name else None
@@ -403,9 +403,12 @@ class Context:
             qb_ids = set(self.players[self.season].qbs(tid)["player_id"]) | set(cands["player_id"].astype(str))
             status = team_status(game, tid, cands, evidence, now, since=self.previous_kickoff(tid, now),
                                  qb_ids=qb_ids)
-            if self.status.put_snapshots(status, now):
-                self.last_change[game] = now
-                changed.add(tid)
+            if not status.empty:
+                frames.append(status)
+        pairs = self.status.put_snapshots_changed(pd.concat(frames, ignore_index=True), now) if frames else set()
+        for game, _ in pairs:
+            self.last_change[game] = now
+        changed = {tid for _, tid in pairs}
         self.status.put_health(news_lag_rows(new, changed))
         self.watches = update_watches(self.watches, new, self.kickoffs, now)
         self.status.put_watches(self.watches)

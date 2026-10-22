@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+from gnomepy.data import DatasetStore
 from pydantic import Field
 
 from gnome_pipelines import Pipeline, PipelineParams, PipelineResult, Resources, Schedule
@@ -23,14 +24,19 @@ STATE_FILES = (X_STATE.name, CLAUDE_CACHE.name)
 NEW_SEASON_MONTH = 7
 
 
+def status_store(prod: bool) -> DatasetStore:
+    """Prod writes carry the run's id and commit (as cfb_update's do), so the datasets page links rows to the run."""
+    return dataset_store() if prod else open_store(False)
+
+
 class QbStatusParams(PipelineParams):
     hours: float = Field(23.75, gt=0, le=24, description=(
         "how long to serve; under 24 so a run ends before the next day's starts"))
     prod: bool = Field(True, description="write the QB status tables to the prod catalog (false: a local warehouse)")
     x: bool = Field(True, description="search X when its key is set")
     claude: bool = Field(True, description="have Claude read posts and headlines when its key is set")
-    state_root: str | None = Field(None, description=(
-        "S3 root of the mirrored state; default s3://<research bucket>/qb_status/state"))
+    state_root: str | None = Field(None, pattern=r"^(s3://|/)\S+$", description=(
+        "S3 root of the mirrored state; leave empty for s3://<research bucket>/qb_status/state"))
 
 
 class QbStatusPipeline(Pipeline[QbStatusParams]):
@@ -49,7 +55,7 @@ class QbStatusPipeline(Pipeline[QbStatusParams]):
         pulled = mirror.pull()
         said: list[str] = []
         season = now.year if now.month >= NEW_SEASON_MONTH else now.year - 1
-        ctx = service_context(dataset_store(), StatusStore(open_store(params.prod)), season, use_x=params.x,
+        ctx = service_context(dataset_store(), StatusStore(status_store(params.prod)), season, use_x=params.x,
                               use_claude=params.claude, say=said.append)
         svc = build_service(ctx, mirror=mirror)
         try:
