@@ -55,6 +55,13 @@ def _to_evidence(row: dict) -> Evidence:
     return Evidence(**values)
 
 
+def _snapshot_value(r: dict) -> tuple:
+    """What counts as a change for a snapshot row. The rule version is part of it, so a new rule republishes every
+    row once and the stored version always names the rule that produced the number."""
+    return (round(float(r["p_start"]), 6), r.get("official_status"), r.get("official_slot"), r.get("reason"),
+            r.get("rule_version"))
+
+
 class StatusStore:
     def __init__(self, store: DatasetStore) -> None:
         self.store = store
@@ -126,8 +133,7 @@ class StatusStore:
         self._snapshots = {}
         for r in _load(self.store, SNAPSHOTS).to_dict("records"):
             key = (r["game_id"], r["team_id"], r["player_id"])
-            self._snapshots[key] = (round(float(r["p_start"]), 6), r.get("official_status"), r.get("official_slot"),
-                                    r.get("reason"))
+            self._snapshots[key] = _snapshot_value(r)
             self._keys.setdefault((r["game_id"], r["team_id"]), set()).add(r["player_id"])
 
     def put_snapshots(self, df: pd.DataFrame, now: datetime) -> int:
@@ -147,7 +153,7 @@ class StatusStore:
         rows = []
         for r in records:
             key = (r["game_id"], r["team_id"], r["player_id"])
-            value = (round(float(r["p_start"]), 6), r.get("official_status"), r.get("official_slot"), r.get("reason"))
+            value = _snapshot_value(r)
             if self._snapshots.get(key) != value:
                 rows.append({**r, "computed_at": pd.Timestamp(now)})
                 self._snapshots[key] = value

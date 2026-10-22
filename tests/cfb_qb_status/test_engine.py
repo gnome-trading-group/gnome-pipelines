@@ -132,3 +132,56 @@ def test_report_rows_for_non_qbs_stay_out_of_the_qb_status():
                      T0 + timedelta(days=5), qb_ids={"T", "P"})
     assert "LB1" not in set(df["player_id"])
     assert df.loc[df["player_id"] == "P", "official_status"].item() == "questionable"
+
+
+def three(t=0.80, p=0.17, k=0.03):
+    return pd.DataFrame([
+        {"player_id": "T", "passer_key": "T", "base": t, "last_starter": True, "season_starter": True},
+        {"player_id": "P", "passer_key": "P", "base": p, "last_starter": False, "season_starter": False},
+        {"player_id": "K", "passer_key": "K", "base": k, "last_starter": False, "season_starter": False},
+    ])
+
+
+def test_questionable_backup_never_outranks_the_questionable_starter():
+    p, _ = status([ev("T", "questionable", T0, slot="Initial"), ev("P", "questionable", T0, slot="Initial")],
+                  cands=three())
+    assert p["T"] == pytest.approx(0.8 * 0.5 + 0.17 * 0.25)
+    assert p["P"] == pytest.approx(0.8 * 0.25 + 0.17 * 0.5)
+    assert p["K"] == pytest.approx(0.8 * 0.25 + 0.17 * 0.25 + 0.03)
+    assert p["T"] > p["P"]
+
+
+def test_a_deep_backup_only_gets_what_the_qbs_ahead_of_him_leave():
+    p, _ = status([ev("T", "questionable", T0, slot="Initial"), ev("P", "out", T0, slot="Initial")],
+                  cands=three(0.80, 0.19, 0.01))
+    assert p["T"] == pytest.approx(0.8 * 0.5 + 0.19 * 0.5)
+    assert p["K"] == pytest.approx(0.8 * 0.5 + 0.19 * 0.5 + 0.01)
+
+
+def returning():
+    return pd.DataFrame([
+        {"player_id": "L", "passer_key": "L", "base": 0.80, "last_starter": True, "season_starter": False},
+        {"player_id": "S", "passer_key": "S", "base": 0.20, "last_starter": False, "season_starter": True},
+    ])
+
+
+def test_season_starter_back_from_injury_takes_the_job_when_probable():
+    p, _ = status([ev("S", "out", T0 - timedelta(days=7), slot="Initial", game=7),
+                   ev("S", "probable", T0, slot="Initial")], cands=returning())
+    assert p["S"] == pytest.approx(0.8 * 0.75)
+    assert p["L"] == pytest.approx(0.8 * 0.25 + 0.2)
+
+
+def test_season_starter_still_questionable_is_not_promoted():
+    p, _ = status([ev("S", "out", T0 - timedelta(days=7), slot="Initial", game=7),
+                   ev("S", "questionable", T0, slot="Initial")], cands=returning())
+    assert p["L"] == pytest.approx(0.8 + 0.2 * 0.5)
+
+
+def test_season_starter_with_no_injury_history_is_not_promoted():
+    p, _ = status([], cands=returning())
+    assert (p["L"], p["S"]) == (pytest.approx(0.8), pytest.approx(0.2))
+
+
+def test_rule_version_is_v2():
+    assert RULE_VERSION == "v2"

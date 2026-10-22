@@ -38,6 +38,15 @@ def test_put_snapshots_only_publishes_changes(tmp_path):
     assert s.put_snapshots(snap.assign(p_start=0.2), T0 + timedelta(hours=2)) == 1
 
 
+def test_a_new_rule_version_republishes_unchanged_numbers(tmp_path):
+    s = store(tmp_path)
+    snap = pd.DataFrame([{"game_id": 8, "team_id": 344, "player_id": "T", "p_start": 0.8, "official_status": None,
+                          "official_slot": None, "evidence_ids": [], "reason": "base", "rule_version": "v1"}])
+    s.put_snapshots(snap, T0)
+    assert s.put_snapshots(snap.assign(rule_version="v2"), T0 + timedelta(hours=1)) == 1
+    assert s.snapshots()["rule_version"].tolist() == ["v2"]
+
+
 class Clock:
     def __init__(self, t):
         self.t = t

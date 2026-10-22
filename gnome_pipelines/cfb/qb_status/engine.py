@@ -1,14 +1,17 @@
-"""Start probabilities for a team's candidate QBs, as a pure function of the evidence known at as_of (rule v1).
+"""Start probabilities for a team's candidate QBs, as a pure function of the evidence known at as_of (rule v2).
 
-Rule v1:
+Rule v2:
 1. Each candidate's latest availability claim wins. Among official reports a later slot beats an earlier one; a
    non-official claim beats the official one only if we saw it later.
 2. Availability comes from AVAILABILITY; left_game_injured 0.5, not_starting 0, returned 1, no claim 1.
 3. Role claims, applied in the order seen: expected_starter gives that QB a 0.90 base (the rest share 0.10);
    qb_change gives the new QB the starter's base and halves the old starter's.
-4. The starter (highest base) gets base x availability; the rest of the mass goes to the other candidates who can
-   play (availability > 0), in proportion to base x availability, or equally if those are all zero. If nobody else
-   can play, the starter gets his availability and the rest goes to "unknown". A player who is Out never gets mass.
+4. A season starter who isn't the last starter, has an injury on record from an earlier game, and is now probable
+   or better swaps bases with the current starter: he is back from injury and takes the job.
+5. The bases are the chance each QB is the coach's intended starter. If the intended starter can't play, the job
+   goes down the depth chart (highest base first), each QB taking it with his own availability. Whatever is left
+   when everyone has been tried goes to "unknown". So a questionable backup never outranks a questionable starter,
+   and a deep backup only gets what the QBs ahead of him leave. A player who is Out never gets mass.
 Team-level game-night flags (no game id) count only if seen after `since`, the team's previous kickoff, so a flag
 from an old game can't keep deciding the starter.
 """
@@ -20,13 +23,15 @@ import pandas as pd
 
 from gnome_pipelines.cfb.qb_status.evidence import AVAILABILITY
 
-RULE_VERSION = "v1"
+RULE_VERSION = "v2"
 SLOT_ORDER = {"Initial": 0, "Update 1": 1, "Update 2": 2, "Game Day": 3}
 EXTRA_AVAILABILITY = {"left_game_injured": 0.5, "not_starting": 0.0, "returned": 1.0}
 AVAILABILITY_STATUSES = set(AVAILABILITY) | set(EXTRA_AVAILABILITY)
 ROLE_STATUSES = {"expected_starter", "qb_change"}
 TEAM_LEVEL = {"left_game_injured", "qb_change"}
 USED_STATES = {"auto", "confirmed"}
+INJURY_STATUSES = {s for s, a in AVAILABILITY.items() if a < 1.0} | {"left_game_injured"}
+RETURN_AVAILABILITY = AVAILABILITY["probable"]
 UNKNOWN = "unknown"
 COLUMNS = ["game_id", "team_id", "player_id", "p_start", "official_status", "official_slot", "evidence_ids", "reason",
            "rule_version"]
@@ -84,6 +89,42 @@ def _latest_claims(ev: pd.DataFrame, pid: str) -> tuple[pd.Series | None, pd.Ser
     return winner, latest_official
 
 
+def _returning_starter(cands: pd.DataFrame, evidence: pd.DataFrame, game_id: int, team_id: int, as_of: datetime,
+                       avail: dict[str, float]) -> str | None:
+    """The season starter coming back from injury, if he is probable or better for this game."""
+    if not {"season_starter", "last_starter"} <= set(cands.columns) or evidence.empty:
+        return None
+    s = cands.loc[cands["season_starter"].astype(bool) & ~cands["last_starter"].astype(bool), "player_id"]
+    if s.empty:
+        return None
+    pid = str(s.iloc[0])
+    if avail.get(pid, 0.0) < RETURN_AVAILABILITY:
+        return None
+    seen = pd.to_datetime(evidence["first_seen_at"], utc=True)
+    hurt = evidence[(evidence["team_id"] == team_id) & (evidence["player_id"].astype(str) == pid)
+                    & (seen <= pd.Timestamp(as_of)) & evidence["review_state"].isin(USED_STATES)
+                    & (evidence["game_id"] != game_id) & evidence["status"].isin(INJURY_STATUSES)]
+    return pid if len(hurt) else None
+
+
+def _depth_chart(base: dict[str, float], avail: dict[str, float]) -> tuple[dict[str, float], float]:
+    """Mix over who the coach intends to start; an unavailable pick passes the job down the depth chart."""
+    total = sum(base.values())
+    weights = {k: (v / total if total > 0 else 1.0 / len(base)) for k, v in base.items()}
+    order = sorted(base, key=lambda k: (-base[k], -avail[k], k))
+    p, unknown = {k: 0.0 for k in base}, 0.0
+    for intended, w in weights.items():
+        remaining = w
+        for k in [intended] + [k for k in order if k != intended]:
+            take = remaining * avail[k]
+            p[k] += take
+            remaining -= take
+            if remaining <= 1e-15:
+                break
+        unknown += max(remaining, 0.0)
+    return p, unknown
+
+
 def team_status(game_id: int, team_id: int, cands: pd.DataFrame, evidence: pd.DataFrame,
                 as_of: datetime, since: datetime | None = None, qb_ids: set[str] | None = None) -> pd.DataFrame:
     """qb_ids, when given, limits evidence-only players to the team's QBs: availability reports list every
@@ -109,24 +150,19 @@ def team_status(game_id: int, team_id: int, cands: pd.DataFrame, evidence: pd.Da
                 else winner["source_type"]
             why[pid] = f"{winner['status']} ({where})"
 
-    p = {k: 0.0 for k in base}
+    p: dict[str, float] = {}
     if base:
-        if max(base.values()) <= 0:
-            base = {k: 1.0 / len(base) for k in base}
-        starter = max(base, key=lambda k: (base[k], avail[k], k))
-        active = [k for k in base if k != starter and avail[k] > 0]
-        if not active:
-            p[starter] = avail[starter]
-            if 1.0 - p[starter] > 1e-12:
-                p[UNKNOWN] = 1.0 - p[starter]
-                why[UNKNOWN] = "no other available QB"
-        else:
-            p[starter] = base[starter] * avail[starter]
-            rest = 1.0 - p[starter]
-            weights = {k: base[k] * avail[k] for k in active}
-            total = sum(weights.values())
-            for k in active:
-                p[k] = rest * (weights[k] / total if total > 0 else 1 / len(active))
+        back = _returning_starter(cands, evidence, game_id, team_id, as_of, avail)
+        if back is not None:
+            top = max(base, key=lambda k: (base[k], k))
+            if top != back:
+                base[back], base[top] = base[top], base[back]
+                note = "back from injury, takes the starter's share"
+                why[back] = f"{why[back]}; {note}" if back in why else note
+        p, unknown = _depth_chart(base, avail)
+        if unknown > 1e-12:
+            p[UNKNOWN] = unknown
+            why[UNKNOWN] = "no other available QB"
 
     rows = []
     for pid, prob in p.items():
