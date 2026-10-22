@@ -74,3 +74,14 @@ def test_with_roster_ids_maps_keys_and_keeps_unlinked():
     out = with_roster_ids(cands, 344, Index())
     assert out["player_id"].tolist() == ["9000002", "x.walkon"]
     assert out["passer_key"].tolist() == ["b.rowe", "x.walkon"]
+
+
+def test_non_qb_passers_and_unlinked_junk_are_left_out():
+    passers = pd.DataFrame(plays(1, "T", 40) + plays(2, "T", 35) + plays(3, "T", 30)
+                           + plays(3, "WR", 1, start=200) + plays(3, "junk", 1, start=300)
+                           + plays(2, "new", 12, start=400))
+    eligible = {"T": True, "WR": False}.get
+    c = candidates("Mississippi State", 344, 2026, datetime(2026, 10, 21, tzinfo=UTC), passers, GAMES,
+                   eligible=eligible)
+    assert set(c["passer_key"]) == {"T", "new"}
+    assert c.loc[c["passer_key"] == "T", "base"].item() == pytest.approx(0.80)

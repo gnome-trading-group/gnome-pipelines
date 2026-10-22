@@ -124,3 +124,11 @@ def test_evidence_only_players_never_hand_mass_to_an_out_player():
     empty = CANDS.iloc[0:0]
     p, _ = status([ev("A1", "out", T0, slot="Initial"), ev("A2", "questionable", T0, slot="Initial")], cands=empty)
     assert p["A1"] == 0.0 and p["A2"] > 0.0
+
+
+def test_report_rows_for_non_qbs_stay_out_of_the_qb_status():
+    lb = ev("LB1", "out", T0, slot="Initial")
+    df = team_status(8, 344, CANDS, evidence_frame([lb, ev("P", "questionable", T0, slot="Initial")]),
+                     T0 + timedelta(days=5), qb_ids={"T", "P"})
+    assert "LB1" not in set(df["player_id"])
+    assert df.loc[df["player_id"] == "P", "official_status"].item() == "questionable"

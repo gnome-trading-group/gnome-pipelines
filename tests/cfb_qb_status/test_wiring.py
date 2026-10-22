@@ -109,3 +109,32 @@ def test_manual_decisions_are_pulled_from_another_process(tmp_path):
     pulled = service_side.pull_new("manual")
     assert [(e.player_id, e.game_id, e.review_state) for e in pulled] == [("9000001", 1, "confirmed")]
     assert service_side.pull_new("manual") == []
+
+
+class ResearchWithPlays(Research):
+    def load(self, name, **kw):
+        if name == "cfb_games":
+            past = {"game_id": 0, "season": 2026, "kickoff": pd.Timestamp("2026-10-17T19:00Z"),
+                    "home_team": "Testville State", "home_id": 501, "away_team": "Example Tech", "away_id": 502,
+                    "home_classification": "fbs", "away_classification": "fbs", "completed": True,
+                    "conference_game": True, "home_conference": "SEC"}
+            return pd.concat([super().load(name, **kw), pd.DataFrame([past])], ignore_index=True)
+        if name == "cfb_passers":
+            qb = [{"season": 2026, "game_id": 0, "offense": "Testville State", "passer": "A.Stone",
+                   "passer_key": "a.stone", "play_seq": i} for i in range(1, 31)]
+            trick = [{"season": 2026, "game_id": 0, "offense": "Testville State", "passer": "C.Vale",
+                      "passer_key": "c.vale", "play_seq": 99}]
+            return pd.DataFrame(qb + trick)
+        return super().load(name, **kw)
+
+
+def test_trick_play_passers_and_non_qb_report_rows_stay_out_of_the_status(tmp_path):
+    status = StatusStore(DatasetStore(CatalogConfig(local_warehouse=tmp_path / "wh")))
+    ctx = Context(ResearchWithPlays(fail=False), status, 2026, cache_dir=tmp_path / "cache")
+    now = T0 - timedelta(days=1)
+    assert ctx.team_candidates(501, now)["player_id"].tolist() == ["9000001"]
+    status.add_evidence([Evidence(evidence_id="wr", source_type="official_report", source_id="r", source_org="SEC",
+                                  first_seen_at=now - timedelta(hours=1), team="Testville State", status="out",
+                                  season=2026, team_id=501, player_id="9000003", game_id=1, report_slot="Initial")])
+    ctx.recompute({501}, [], now)
+    assert "9000003" not in set(status.snapshots()["player_id"])

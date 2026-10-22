@@ -85,11 +85,15 @@ def _latest_claims(ev: pd.DataFrame, pid: str) -> tuple[pd.Series | None, pd.Ser
 
 
 def team_status(game_id: int, team_id: int, cands: pd.DataFrame, evidence: pd.DataFrame,
-                as_of: datetime, since: datetime | None = None) -> pd.DataFrame:
+                as_of: datetime, since: datetime | None = None, qb_ids: set[str] | None = None) -> pd.DataFrame:
+    """qb_ids, when given, limits evidence-only players to the team's QBs: availability reports list every
+    position, and a linebacker who is Out has no place in the QB status."""
     ev = _relevant(evidence, game_id, team_id, as_of, since)
     base = {str(r.player_id): float(r.base) for r in cands.itertuples()}
     for pid in ev["player_id"].astype(str):
-        base.setdefault(pid, 0.0)
+        if qb_ids is None or pid in qb_ids:
+            base.setdefault(pid, 0.0)
+    ev = ev[ev["player_id"].astype(str).isin(base)]
     used: dict[str, list[str]] = {pid: [] for pid in base}
     base = _apply_roles(base, ev, used)
 

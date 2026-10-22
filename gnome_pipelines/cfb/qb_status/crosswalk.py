@@ -15,6 +15,9 @@ from gnomepy_research.models.cfb.features.qb import roster_keys
 from gnome_pipelines.datasets.qb_status import PLAYERS
 
 MATCH_OK = 0.8
+# A rostered non-QB counts as a QB only with this many dropbacks: trick plays throw 1-3, real QBs far more.
+MIN_DROPBACKS = 10
+QB_POSITIONS = {"QB"}
 
 TEAM_ALIASES = {"miami fl": "miami", "fiu": "florida international", "umass": "massachusetts",
                 "app state": "appalachian state", "ul monroe": "louisiana monroe", "ulm": "louisiana monroe",
@@ -104,12 +107,37 @@ class PlayerIndex:
         r["last_n"] = r["last_name"].map(lambda s: _surname(s) if pd.notna(s) else "")
         self.rosters = r
         p = passers[passers["season"] == self.season] if "season" in passers else passers
-        self.passer_keys = set(p["passer_key"].dropna().astype(str))
+        names = r.dropna(subset=["team_id"]).drop_duplicates("team").set_index("team")["team_id"]
+        counts = p.dropna(subset=["passer_key"]).groupby(["offense", "passer_key"]).size()
+        self._dropbacks = {(int(names[o]), str(k)): int(n) for (o, k), n in counts.items() if o in names.index}
         keyed = r.dropna(subset=["team_id"])
-        keys = roster_keys(keyed) if len(keyed) else pd.DataFrame(columns=["team_id", "passer_key", "player_id"])
-        self._by_key = {(int(t), k): str(pid) for t, k, pid in keys[["team_id", "passer_key", "player_id"]].itertuples(
-            index=False)}
+        # roster_keys leaves a key unlinked when two teammates share it. When exactly one of them is a QB (a QB and a
+        # long snapper both "A. Johnson"), the passer is the QB, so QB-only keys are layered on top.
+        self._by_key = self._keys(keyed)
+        self._by_key.update(self._keys(keyed[keyed["position"].isin(QB_POSITIONS)]))
         self._key_of = {(t, pid): k for (t, k), pid in self._by_key.items()}
+        self._position = {(int(t), str(pid)): pos for t, pid, pos in keyed[["team_id", "player_id", "position"]]
+                          .itertuples(index=False)}
+
+    @staticmethod
+    def _keys(rows: pd.DataFrame) -> dict[tuple[int, str], str]:
+        if not len(rows):
+            return {}
+        keys = roster_keys(rows)
+        return {(int(t), k): str(pid) for t, k, pid in keys[["team_id", "passer_key", "player_id"]].itertuples(
+            index=False)}
+
+    def dropbacks(self, team_id: int, passer_key: str | None) -> int:
+        return self._dropbacks.get((int(team_id), str(passer_key)), 0) if passer_key else 0
+
+    def is_qb(self, team_id: int, passer_key: str) -> bool | None:
+        """True if the passer key is a rostered QB (or a non-QB with real QB volume), False if it is a rostered
+        non-QB (a trick-play passer), None if the roster can't tell who it is."""
+        pid = self.player_for_key(team_id, passer_key)
+        if pid is None:
+            return None
+        return (self._position.get((int(team_id), pid)) in QB_POSITIONS
+                or self.dropbacks(team_id, passer_key) >= MIN_DROPBACKS)
 
     def player_for_key(self, team_id: int, passer_key: str) -> str | None:
         """The roster player id behind a play-by-play passer key (first initial + "." + surname), or None."""
@@ -145,11 +173,11 @@ class PlayerIndex:
     def qbs(self, team_id: int) -> pd.DataFrame:
         team = self.rosters[self.rosters["team_id"] == team_id]
         key = team["player_id"].astype(str).map(lambda pid: self._key_of.get((int(team_id), pid)))
-        threw = key.isin(self.passer_keys)
-        keep = team[(team["position"] == "QB") | threw].copy()
+        n = key.map(lambda k: self.dropbacks(team_id, k))
+        keep = team[team["position"].isin(QB_POSITIONS) | (n >= MIN_DROPBACKS)].copy()
         keep["player_id"] = keep["player_id"].astype(str)
         keep["name"] = (keep["first_name"].fillna("") + " " + keep["last_name"].fillna("")).str.strip()
-        keep["passer_key"] = key[keep.index].where(threw[keep.index])
+        keep["passer_key"] = key[keep.index].where(n[keep.index] > 0)
         return keep[["player_id", "name", "jersey_s", "passer_key"]].rename(columns={"jersey_s": "jersey"}).reset_index(
             drop=True)
 

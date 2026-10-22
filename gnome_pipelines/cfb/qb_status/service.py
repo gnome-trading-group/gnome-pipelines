@@ -239,8 +239,10 @@ class Context:
         return g.assign(code=g["home_conference"].map(CONF_CODES)).dropna(subset=["code"])
 
     def team_candidates(self, team_id: int, now: datetime) -> pd.DataFrame:
-        c = candidates(self.team_names.get(team_id, ""), team_id, self.season, now, self.passers, self.games)
-        return with_roster_ids(c, team_id, self.players[self.season])
+        index = self.players[self.season]
+        c = candidates(self.team_names.get(team_id, ""), team_id, self.season, now, self.passers, self.games,
+                       eligible=lambda key: index.is_qb(team_id, key))
+        return with_roster_ids(c, team_id, index)
 
     def previous_kickoff(self, team_id: int, now: datetime) -> datetime | None:
         g = self.games[(self.games["home_id"] == team_id) | (self.games["away_id"] == team_id)]
@@ -268,7 +270,9 @@ class Context:
             if game is None:
                 continue
             cands = self.team_candidates(tid, now)
-            status = team_status(game, tid, cands, evidence, now, since=self.previous_kickoff(tid, now))
+            qb_ids = set(self.players[self.season].qbs(tid)["player_id"]) | set(cands["player_id"].astype(str))
+            status = team_status(game, tid, cands, evidence, now, since=self.previous_kickoff(tid, now),
+                                 qb_ids=qb_ids)
             if self.status.put_snapshots(status, now):
                 self.last_change[game] = now
                 changed.add(tid)

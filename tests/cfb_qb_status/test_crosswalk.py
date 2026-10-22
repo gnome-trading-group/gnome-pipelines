@@ -94,3 +94,33 @@ def test_players_frame_has_one_row_per_player_even_when_listed_twice():
     twice = pd.concat([ROSTERS, ROSTERS.iloc[[0]].assign(team="Oklahoma", team_id=201)], ignore_index=True)
     df = players_frame(PlayerIndex(twice, PASSERS, 2026))
     assert not df.duplicated(["season", "player_id"]).any()
+
+
+def _with(*extra, passers=PASSERS):
+    rows = pd.concat([ROSTERS, pd.DataFrame([{"season": 2026, "team": "Mississippi State", "team_id": 344, **e}
+                                             for e in extra])], ignore_index=True)
+    return PlayerIndex(rows, passers, 2026)
+
+
+def test_key_shared_with_a_non_qb_teammate_links_to_the_qb():
+    index = _with({"player_id": "9000003", "first_name": "Aaron", "last_name": "Stone", "position": "LS",
+                   "jersey": 47.0})
+    assert index.player_for_key(344, "a.stone") == "9000001"
+
+
+def test_is_qb_by_roster_position_and_none_for_unknown_keys():
+    trick = pd.concat([PASSERS, pd.DataFrame([{"season": 2026, "game_id": 1, "offense": "Mississippi State",
+                                               "passer": "C.Fenn", "passer_key": "c.fenn", "play_seq": 2}])])
+    index = _with({"player_id": "9000004", "first_name": "Cole", "last_name": "Fenn", "position": "WR",
+                   "jersey": 81.0}, passers=trick)
+    assert index.is_qb(344, "a.stone") is True
+    assert index.is_qb(344, "c.fenn") is False
+    assert index.is_qb(344, "n.tech") is None
+
+
+def test_one_trick_play_pass_does_not_make_a_qb():
+    trick = pd.concat([PASSERS, pd.DataFrame([{"season": 2026, "game_id": 1, "offense": "Mississippi State",
+                                               "passer": "C.Fenn", "passer_key": "c.fenn", "play_seq": 2}])])
+    index = _with({"player_id": "9000004", "first_name": "Cole", "last_name": "Fenn", "position": "WR",
+                   "jersey": 81.0}, passers=trick)
+    assert "9000004" not in set(index.qbs(344)["player_id"])

@@ -6,11 +6,15 @@ with_roster_ids() then swaps in roster player ids, so candidates line up with re
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime, timedelta
 
 import pandas as pd
 
 LAST_STARTER_BASE = 0.80
+# A passer the roster can't identify still counts with this many dropbacks; below it it's a trick play or a
+# play-by-play parsing artifact (a team name read as the passer).
+MIN_UNLINKED_DROPBACKS = 10
 PBP_DELAY = timedelta(hours=24)
 COLUMNS = ["player_id", "passer_key", "base", "last_starter", "season_starter"]
 
@@ -21,11 +25,18 @@ def game_starters(passers: pd.DataFrame) -> pd.DataFrame:
 
 
 def candidates(team: str, team_id: int, season: int, as_of: datetime, passers: pd.DataFrame,
-               games: pd.DataFrame) -> pd.DataFrame:
+               games: pd.DataFrame, eligible: Callable[[str], bool | None] | None = None) -> pd.DataFrame:
+    """eligible(passer_key) says whether a passer is a QB: True keeps them, False drops them (a receiver's trick-play
+    pass), None (unknown to the roster) keeps them only with MIN_UNLINKED_DROPBACKS dropbacks."""
     kick = pd.to_datetime(games["kickoff"], utc=True)
     played = games[((games["home_id"] == team_id) | (games["away_id"] == team_id)) & (games["season"] == season)
                    & (kick < pd.Timestamp(as_of) - PBP_DELAY)]
     p = passers[passers["game_id"].isin(played["game_id"]) & (passers["offense"] == team)].dropna(subset=["passer_key"])
+    if eligible is not None and not p.empty:
+        n = p.groupby("passer_key").size()
+        ok = {k for k, c in n.items()
+              if (e := eligible(str(k))) is True or (e is None and c >= MIN_UNLINKED_DROPBACKS)}
+        p = p[p["passer_key"].isin(ok)]
     if p.empty:
         return pd.DataFrame(columns=COLUMNS)
     dropbacks = p.groupby("passer_key").size()
