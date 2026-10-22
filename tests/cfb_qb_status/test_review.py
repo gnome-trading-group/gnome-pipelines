@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
+import pandas as pd
 import pytest
 from gnomepy.data import CatalogConfig, DatasetStore
 
@@ -61,3 +62,11 @@ def test_only_web_links_are_kept_and_posts_must_be_json():
     assert safe_url("javascript:alert(1)") is None
     assert is_json_post({"Content-Type": "application/json; charset=utf-8"})
     assert not is_json_post({"Content-Type": "text/plain"})
+
+
+def test_pending_fills_missing_names_from_the_players_table(store):
+    from gnome_pipelines.datasets.qb_status import PLAYERS
+    store.put_players(pd.DataFrame([{"season": 2026, "player_id": "9000001", "team_id": 344, "team": "Mississippi State",
+                                     "first_name": "Avery", "last_name": "Stone", "jersey": "1", "position": "QB",
+                                     "passer_key": "a.stone", "aliases": ["Avery Stone"]}], columns=PLAYERS.schema.names))
+    assert pending(store)["player_raw"].tolist() == ["Avery Stone"]

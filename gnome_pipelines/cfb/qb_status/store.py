@@ -189,6 +189,9 @@ class StatusStore:
         if not df.empty:
             self.store.publish(PLAYERS, df[PLAYERS.schema.names])
 
+    def players(self) -> pd.DataFrame:
+        return _load(self.store, PLAYERS)
+
     def put_sources(self, df: pd.DataFrame) -> None:
         if not df.empty:
             self.store.publish(SOURCES, df[SOURCES.schema.names])

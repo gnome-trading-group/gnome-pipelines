@@ -29,7 +29,13 @@ FIELDS = ("team", "season", "team_id", "player_raw", "jersey", "player_id", "mat
 def pending(store: StatusStore) -> pd.DataFrame:
     ev = store.evidence()
     decided = set(ev.loc[ev["source_type"] == "manual", "source_id"])
-    out = ev[(ev["review_state"] == "pending") & ~ev["evidence_id"].isin(decided)]
+    out = ev[(ev["review_state"] == "pending") & ~ev["evidence_id"].isin(decided)].copy()
+    players = store.players()
+    if len(out) and len(players):
+        names = dict(zip(players["player_id"].astype(str),
+                         (players["first_name"].fillna("") + " " + players["last_name"].fillna("")).str.strip()))
+        missing = out["player_raw"].isna() & out["player_id"].notna()
+        out.loc[missing, "player_raw"] = out.loc[missing, "player_id"].astype(str).map(names)
     return out.sort_values("first_seen_at", ascending=False).reset_index(drop=True)
 
 
