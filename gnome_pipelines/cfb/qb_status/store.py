@@ -11,11 +11,13 @@ from pathlib import Path
 
 import pandas as pd
 from gnomepy.data import CatalogConfig, DatasetStore
+from gnomepy.data.datasets import INGESTED_AT
 from pyiceberg.exceptions import NoSuchTableError
 from pyiceberg.expressions import EqualTo
 
 from gnome_pipelines.cfb.qb_status.evidence import Evidence, evidence_frame, evidence_id
-from gnome_pipelines.datasets.qb_status import EVIDENCE, HEALTH, PLAYERS, REPORT_SCHEDULE, SNAPSHOTS, SOURCES, WATCHES
+from gnome_pipelines.datasets.qb_status import (ALL, EVIDENCE, HEALTH, PLAYERS, REPORT_SCHEDULE, SNAPSHOTS, SOURCES,
+                                                WATCHES)
 
 DEFAULT_WAREHOUSE = Path.home() / ".cache" / "gnome-pipelines" / "qb_status_warehouse"
 CODE_VERSION = "gnome-pipelines@qb_status"
@@ -36,6 +38,38 @@ def _load(store: DatasetStore, spec, as_of: datetime | None = None) -> pd.DataFr
         return store.load(spec.name, as_of=as_of)
     except NoSuchTableError:
         return pd.DataFrame(columns=spec.schema.names)
+
+
+def _versions(store: DatasetStore, spec) -> list[tuple[pd.Timestamp, pd.DataFrame]]:
+    """Every batch ever published to a table, oldest first, read back through as_of: the newest batch as of a time is
+    the rows ingested at that time, and stepping to just before it reveals the one before."""
+    out, as_of = [], None
+    while True:
+        try:
+            rows = store.load(spec.name, as_of=as_of, include_metadata=True)
+        except NoSuchTableError:
+            return []
+        if rows.empty:
+            return out[::-1]
+        at = rows[INGESTED_AT].max()
+        out.append((at, rows[rows[INGESTED_AT] == at][spec.schema.names]))
+        as_of = (at - pd.Timedelta(microseconds=1)).to_pydatetime()
+
+
+def copy_tables(src: DatasetStore, dst: DatasetStore) -> dict[str, int]:
+    """Copy every QB status table, every version at its original time, into a destination that has none of them
+    (the laptop phase's history into prod, once), so as_of reads there match the source."""
+    for spec in ALL:
+        if not _load(dst, spec).empty:
+            raise RuntimeError(f"{spec.name} already has rows in the destination; nothing copied")
+    copied = {}
+    for spec in ALL:
+        batches = _versions(src, spec)
+        for at, rows in batches:
+            dst.publish(spec, rows, ingested_at=at.to_pydatetime())
+        if batches:
+            copied[spec.name] = sum(len(rows) for _, rows in batches)
+    return copied
 
 
 def _plain(v):

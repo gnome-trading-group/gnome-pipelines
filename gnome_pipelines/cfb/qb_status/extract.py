@@ -2,14 +2,14 @@
 
 RuleExtractor needs a QB's last name and a status phrase in the same clause and never claims more than 0.6 confidence.
 ClaudeExtractor has Claude Haiku 5.5 read each text that names one of the team's QBs next to a status word, and is
-enabled once ANTHROPIC_API_KEY is set. Haiku is the spec's "cheapest Claude model"; the model is one constant.
+enabled once its key is found (ANTHROPIC_API_KEY, else gnome/pipelines/anthropic in Secrets Manager). Haiku is the
+spec's "cheapest Claude model"; the model is one constant.
 Whether a claim then applies on its own is autoapply's decision.
 """
 from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,6 +17,9 @@ from typing import Callable, Protocol
 
 import anthropic
 import pandas as pd
+from botocore.exceptions import BotoCoreError, ClientError
+
+from gnome_pipelines import credentials
 
 RULE_CONFIDENCE = 0.6
 # Most specific first: the first phrase found in a clause decides its status
@@ -172,11 +175,14 @@ class ClaudeExtractor:
     name = CLAUDE_MODEL
 
     def __init__(self, client=None, cache_path: Path = CLAUDE_CACHE, daily_calls: int = CLAUDE_DAILY_CALLS,
-                 clock: Callable[[], datetime] | None = None) -> None:
+                 clock: Callable[[], datetime] | None = None,
+                 secret_fn: Callable[[str, str], str] = credentials.secret) -> None:
         if client is None:
-            if not os.environ.get("ANTHROPIC_API_KEY"):
-                raise NotConfigured("set ANTHROPIC_API_KEY to enable model-based extraction")
-            client = anthropic.Anthropic(timeout=30.0, max_retries=2)
+            try:
+                key = secret_fn("anthropic", "ANTHROPIC_API_KEY")
+            except (RuntimeError, BotoCoreError, ClientError) as e:
+                raise NotConfigured(f"no Anthropic key: {e}") from e
+            client = anthropic.Anthropic(api_key=key, timeout=30.0, max_retries=2)
         self.client, self.cache_path, self.daily_calls = client, Path(cache_path), daily_calls
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.cache: dict[str, list[tuple[str, str, str, float]]] = {}

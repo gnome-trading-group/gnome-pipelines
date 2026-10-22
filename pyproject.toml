@@ -11,7 +11,6 @@ dependencies = [
     "gnomepy[live-data] (>=2.26.2,<3.0.0)",
     "gnomepy-research",
     "pydantic (>=2.11,<3.0.0)",
-    "anthropic (>=2.1.0,<3.0.0)",
 ]
 
 [project.optional-dependencies]
@@ -23,9 +22,10 @@ cs2 = [
     "nodriver (>=0.50.6)",
     "demoparser2 (>=0.42.0)",
 ]
-# CFB: the cfb_update pipeline, and the CFB scripts in gnome_pipelines/cfb/ that still run by hand.
+# CFB: the cfb_update and cfb_qb_status pipelines, and the CFB scripts in gnome_pipelines/cfb/ that still run by hand.
 cfb = [
     "gnomepy-research[pymc]",
+    "anthropic (>=2.1.0,<3.0.0)",
 ]
 
 [project.scripts]

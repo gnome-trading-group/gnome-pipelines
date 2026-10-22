@@ -239,3 +239,30 @@ def test_sources_round_trip_and_republish_only_changes(tmp_path):
     s.put_sources(df.assign(added_at=pd.Timestamp(T0 + timedelta(days=1))))
     got = s.sources()
     assert got["handle"].tolist() == ["TestvilleBeat"] and list(got["teams"].iloc[0]) == ["Testville State"]
+
+
+def test_run_until_stops_at_the_deadline(tmp_path):
+    t, runs = [T0], []
+    svc = Service([Task("a", lambda now: 10.0, lambda now: runs.append(now) or [])], store(tmp_path),
+                  clock=lambda: t[0], sleep=lambda s: t.__setitem__(0, t[0] + timedelta(seconds=s)))
+    svc.run_until(T0 + timedelta(seconds=30))
+    assert runs == [T0, T0 + timedelta(seconds=10), T0 + timedelta(seconds=20)]
+    assert t[0] == T0 + timedelta(seconds=30)
+
+
+def test_copy_tables_replays_every_version_with_its_original_time(tmp_path):
+    from gnome_pipelines.cfb.qb_status.store import copy_tables
+    src, dst = store(tmp_path / "src"), store(tmp_path / "dst")
+    src.add_evidence([ev("a")])
+    snap = pd.DataFrame([{"game_id": 8, "team_id": 344, "player_id": "T", "p_start": 0.8, "official_status": None,
+                          "official_slot": None, "evidence_ids": [], "reason": "base", "rule_version": "v2"}])
+    src.put_snapshots(snap, T0)
+    src.put_snapshots(snap.assign(p_start=0.3), T0 + timedelta(hours=1))
+    copied = copy_tables(src.store, dst.store)
+    assert copied["qb_status_evidence"] == 1 and copied["qb_status_snapshots"] == 2
+    meta = src.store.load("qb_status_snapshots", include_metadata=True)["ingested_at"].iloc[0]
+    before = meta - timedelta(microseconds=1)
+    assert dst.snapshots()["p_start"].tolist() == [0.3]
+    assert (dst.snapshots(as_of=before)["p_start"].tolist() == src.snapshots(as_of=before)["p_start"].tolist() == [0.8])
+    with pytest.raises(RuntimeError):
+        copy_tables(src.store, dst.store)

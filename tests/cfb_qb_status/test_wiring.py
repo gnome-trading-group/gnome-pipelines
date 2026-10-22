@@ -295,3 +295,31 @@ def test_the_hourly_refresh_records_what_the_model_has_cost(tmp_path):
     ctx.refresh_run(T0)
     spend = status.health().set_index("kind").loc["claude_spend"]
     assert spend["value"] == pytest.approx(0.0123) and "claude-haiku-5-5" in spend["detail"]
+
+
+def test_given_a_mirror_the_service_pushes_its_state_every_minute(tmp_path):
+    class Mirror:
+        pushes = 0
+
+        def push(self):
+            Mirror.pushes += 1
+            return 0
+    status = StatusStore(DatasetStore(CatalogConfig(local_warehouse=tmp_path / "wh")))
+    ctx = Context(ResearchWithPlays(fail=False), status, 2026, cache_dir=tmp_path / "cache")
+    task = next(t for t in build_service(ctx, espn=False, market=False, news=False, mirror=Mirror()).tasks
+                if t.name == "state_push")
+    assert task.interval(T0) == 60.0 and task.run(T0) == [] and Mirror.pushes == 1
+
+
+def test_service_context_reads_with_rules_when_claude_has_no_key(tmp_path, monkeypatch):
+    from gnome_pipelines.cfb.qb_status import service
+    from gnome_pipelines.cfb.qb_status.extract import NotConfigured
+
+    def no_key(*a, **k):
+        raise NotConfigured("no key")
+    monkeypatch.setattr(service, "ClaudeExtractor", no_key)
+    said = []
+    status = StatusStore(DatasetStore(CatalogConfig(local_warehouse=tmp_path / "wh")))
+    ctx = service.service_context(ResearchWithPlays(fail=False), status, 2026, use_x=False, use_claude=True,
+                                  say=said.append, cache_dir=tmp_path / "cache")
+    assert ctx.extractor.name == "rules" and ctx.x is None and any("Claude is off" in s for s in said)

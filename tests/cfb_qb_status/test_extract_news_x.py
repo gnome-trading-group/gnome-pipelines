@@ -33,10 +33,18 @@ def test_rule_extractor_prefers_specific_phrases():
     assert set(claims) == {("9000002", "expected_starter", "unclear", 0.6), ("9000001", "not_starting", "unclear", 0.6)}
 
 
-def test_claude_extractor_requires_key(monkeypatch):
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+def test_claude_extractor_requires_key():
+    def missing(name, env):
+        raise RuntimeError("gnome/pipelines/anthropic has no value in this account")
     with pytest.raises(NotConfigured):
-        ClaudeExtractor()
+        ClaudeExtractor(secret_fn=missing)
+
+
+def test_claude_key_comes_from_the_secret_store(tmp_path):
+    asked = []
+    x = ClaudeExtractor(secret_fn=lambda name, env: asked.append((name, env)) or "sk-test",
+                        cache_path=tmp_path / "c.jsonl")
+    assert asked == [("anthropic", "ANTHROPIC_API_KEY")] and x.client.api_key == "sk-test"
 
 
 class FakeClient:

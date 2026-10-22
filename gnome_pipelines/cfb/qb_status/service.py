@@ -37,6 +37,7 @@ from gnome_pipelines.cfb.qb_status.health import (health_report, health_row, kic
 from gnome_pipelines.cfb.qb_status.market_alarm import EVENTS, SERIES, Alarm, alarms, kalshi_home_probs, missed_news
 from gnome_pipelines.cfb.qb_status.news import news_evidence, parse_rss, rss_url
 from gnome_pipelines.cfb.qb_status.pbp_flags import SCOREBOARD, SUMMARY, game_flags, live_games
+from gnome_pipelines.cfb.qb_status.state_sync import StateMirror
 from gnome_pipelines.cfb.qb_status.schedule import (WINDOW_AFTER, expected_releases, report_poll_interval,
                                                      schedule_rows)
 from gnome_pipelines.cfb.qb_status.store import StatusStore, open_store
@@ -128,9 +129,12 @@ class Service:
         self.last_step = now
 
     def run_forever(self) -> None:
+        self.run_until(datetime.max.replace(tzinfo=timezone.utc))
+
+    def run_until(self, deadline: datetime) -> None:
         clock = self.clock or utcnow
         self.clock = clock
-        while True:
+        while clock() < deadline:
             self.step(clock())
             self.last_step = clock()
             self.sleep(1.0)
@@ -581,7 +585,11 @@ class Context:
         return []
 
 
-def build_service(ctx: Context, espn: bool = True, market: bool = True, news: bool = True) -> Service:
+STATE_PUSH_EVERY = 60.0
+
+
+def build_service(ctx: Context, espn: bool = True, market: bool = True, news: bool = True,
+                  mirror: StateMirror | None = None) -> Service:
     tasks = [Task("reports", ctx.reports_interval, ctx.reports_run)]
     if espn:
         tasks.append(Task("espn", ctx.espn_interval, ctx.espn_run))
@@ -599,7 +607,29 @@ def build_service(ctx: Context, espn: bool = True, market: bool = True, news: bo
               Task("recompute_all", lambda now: HOUR, ctx.recompute_all_run),
               Task("refresh", lambda now: HOUR, ctx.refresh_run),
               Task("accuracy", lambda now: HOUR, ctx.accuracy_run)]
+    if mirror is not None:
+        def push_state(now: datetime) -> list[Evidence]:
+            mirror.push()
+            return []
+        tasks.append(Task("state_push", lambda now: STATE_PUSH_EVERY, push_state))
     return Service(tasks, ctx.status, recompute=ctx.recompute)
+
+
+def service_context(research: DatasetStore, status: StatusStore, season: int, use_x: bool = True,
+                    use_claude: bool = True, say: Callable[[str], None] = print,
+                    cache_dir: Path | None = None) -> Context:
+    """The Context with X and Claude switched on where their keys can be found (environment, else Secrets Manager)."""
+    x = XSource(budget=ReadBudget(10**9)) if use_x else None   # XBudget is the real governor
+    if x is not None and not x.enabled:
+        say("X is off: no X_BEARER_TOKEN in the environment and no gnome/pipelines/x secret")
+    extractor = None
+    if use_claude:
+        try:
+            extractor = ClaudeExtractor()
+        except NotConfigured as e:
+            say(f"Claude is off ({e}); posts and headlines are read by rules and wait for review")
+    return Context(research, status, season, cache_dir=cache_dir, x=x if x is not None and x.enabled else None,
+                   extractor=extractor)
 
 
 def _print_team(ctx: Context, team: str, now: datetime) -> None:
@@ -638,16 +668,7 @@ def main(argv: list[str] | None = None) -> None:
         status.put_sources(registry_frame(pd.read_csv(a.load_registry), vetted_by="user", now=now))
         print(f"loaded {len(status.sources())} X sources")
         return
-    x = None if a.no_x else XSource(budget=ReadBudget(10**9))   # XBudget is the real governor
-    extractor = None
-    if not a.no_claude:
-        try:
-            extractor = ClaudeExtractor()
-        except NotConfigured:
-            print("Claude is off: no ANTHROPIC_API_KEY; posts and headlines are read by rules and wait for review")
-    ctx = Context(DatasetStore(), status, season, x=x if x is not None and x.enabled else None, extractor=extractor)
-    if x is not None and not x.enabled:
-        print("X is off: no X_BEARER_TOKEN in the environment and no gnome/pipelines/x secret")
+    ctx = service_context(DatasetStore(), status, season, use_x=not a.no_x, use_claude=not a.no_claude)
     if a.capture_dir:
         new = status.add_evidence_new(capture_evidence(a.capture_dir, ctx.teams, ctx.players, ctx.games))
         print(f"loaded {len(new)} new evidence rows from the capture")
