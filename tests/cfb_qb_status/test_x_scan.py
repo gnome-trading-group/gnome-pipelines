@@ -162,6 +162,7 @@ def test_a_beat_writers_post_becomes_pending_evidence_for_their_team():
     assert [(e.player_id, e.status, e.team_id, e.game_id, e.review_state) for e in ev] == [
         ("9000001", "out", 501, 77, "pending")]
     assert ev[0].source_type == "x_post" and ev[0].url.endswith("/status/100")
+    assert ev[0].player_raw == "Avery Stone"
 
 
 def test_an_insiders_post_is_matched_to_a_team_by_full_name():

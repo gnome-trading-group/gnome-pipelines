@@ -266,5 +266,8 @@ def posts_to_evidence(posts: list[dict], query: Query, registry: Registry, qb_fr
                 continue
             claims = extractor.extract(p.get("text", ""), tid, qbs)
             if claims:
-                out += x_evidence(p, handle, claims, team, tid, now, game_id=game_for(tid))
+                names = dict(zip(qbs["player_id"].astype(str), qbs["name"]))
+                for e in x_evidence(p, handle, claims, team, tid, now, game_id=game_for(tid)):
+                    e.player_raw = names.get(str(e.player_id))
+                    out.append(e)
     return out
