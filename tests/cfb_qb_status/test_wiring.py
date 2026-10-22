@@ -323,3 +323,29 @@ def test_service_context_reads_with_rules_when_claude_has_no_key(tmp_path, monke
     ctx = service.service_context(ResearchWithPlays(fail=False), status, 2026, use_x=False, use_claude=True,
                                   say=said.append, cache_dir=tmp_path / "cache")
     assert ctx.extractor.name == "rules" and ctx.x is None and any("Claude is off" in s for s in said)
+
+
+class ResearchTwoTeams(ResearchWithPlays):
+    def load(self, name, **kw):
+        df = super().load(name, **kw)
+        if name == "cfb_rosters":
+            return pd.concat([df, pd.DataFrame([{"season": 2026, "player_id": "9000020", "first_name": "Dana",
+                                                  "last_name": "Quill", "team": "Example Tech", "position": "QB",
+                                                  "jersey": 7.0, "team_id": 502}])], ignore_index=True)
+        if name == "cfb_passers":
+            return pd.concat([df, pd.DataFrame([{"season": 2026, "game_id": 0, "offense": "Example Tech",
+                                                  "passer": "D.Quill", "passer_key": "d.quill", "play_seq": 100 + i}
+                                                 for i in range(30)])], ignore_index=True)
+        return df
+
+
+def test_a_recompute_writes_every_changed_team_in_one_commit(tmp_path):
+    status = StatusStore(DatasetStore(CatalogConfig(local_warehouse=tmp_path / "wh")))
+    ctx = Context(ResearchTwoTeams(fail=False), status, 2026, cache_dir=tmp_path / "cache")
+    commits, publish = [], status.store.publish
+    status.store.publish = lambda spec, df, **kw: commits.append(spec.name) or publish(spec, df, **kw)
+    now = T0 - timedelta(days=1)
+    ctx.recompute({501, 502}, [], now)
+    snaps = status.snapshots()
+    assert set(snaps["team_id"]) == {501, 502} and commits.count("qb_status_snapshots") == 1
+    assert ctx.last_change == {1: now}

@@ -266,3 +266,15 @@ def test_copy_tables_replays_every_version_with_its_original_time(tmp_path):
     assert (dst.snapshots(as_of=before)["p_start"].tolist() == src.snapshots(as_of=before)["p_start"].tolist() == [0.8])
     with pytest.raises(RuntimeError):
         copy_tables(src.store, dst.store)
+
+
+def test_copy_tables_can_leave_out_a_table_the_destination_already_has(tmp_path):
+    from gnome_pipelines.cfb.qb_status.store import copy_tables
+    from gnome_pipelines.datasets.qb_status import ALL, EVIDENCE
+    src, dst = store(tmp_path / "src"), store(tmp_path / "dst")
+    src.add_evidence([ev("a")])
+    dst.add_evidence([ev("z")])
+    with pytest.raises(RuntimeError):
+        copy_tables(src.store, dst.store)
+    assert copy_tables(src.store, dst.store, specs=[s for s in ALL if s is not EVIDENCE]) == {}
+    assert sorted(dst.evidence()["evidence_id"]) == ["z"]
