@@ -15,7 +15,7 @@ through `gnomepy.data`; gnomepy-research holds the feature and model code these 
 | `gnome_pipelines/cs2_bayes/` | `cs2_bayes_fit`: the weekly Bayesian series posterior the cs2_series sessions blend with the pre-veto model (not published unless it converged); `cs2_bayes_blend`: publishes the blend weights from a research walk-forward |
 | `gnome_pipelines/cs2_upcoming/` | `cs2_upcoming`: every 15 min, upcoming BO3s from HLTV (kickoff, status, lineups, features), their listings and books on Polymarket International, Kalshi and Polymarket US, for gnome-launcher and the CS2 strategies |
 | `gnome_pipelines/cs2_round_model/` | Round win probability model training |
-| `gnome_pipelines/cfb/` | CFBD ingestion, quality checks, feature snapshots, team-week posteriors |
+| `gnome_pipelines/cfb/` | CFBD ingestion, quality checks, feature snapshots, team-week posteriors, and the `cfb_update` pipeline (family `cfb`): the season refreshed twice daily in season, its CFBD responses mirrored to `s3://<research bucket>/apicache/cfbd` |
 | `gnome_pipelines/__init__.py` | `Pipeline[Params]`: what a pipeline declares (parameters, description, `Resources`, `Schedule`s) |
 | `gnome_pipelines/families/` | Pipeline families: each module lists the pipelines that share one image (`PIPELINES`) |
 | `gnome_pipelines/manifest.py` | Those declarations as JSON, published to SSM by CI per family for the API and the scheduler |
