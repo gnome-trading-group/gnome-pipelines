@@ -12,7 +12,7 @@ import * as s3 from "aws-cdk-lib/aws-s3";
 import * as scheduler from "aws-cdk-lib/aws-scheduler";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import { Construct } from "constructs";
-import { MonitoringFacade, noopAction } from "cdk-monitoring-constructs";
+import { DefaultDashboardFactory, MonitoringFacade, noopAction } from "cdk-monitoring-constructs";
 import { Stage } from "@gnome-trading-group/gnome-shared-cdk";
 import { grantResearchTables } from "../research-tables";
 
@@ -285,6 +285,11 @@ export class RunStack extends cdk.Stack {
     // The alarms carry no action: the registry's alerting stack hears every alarm change through EventBridge and
     // reads the severity from the tier each is declared under.
     new MonitoringFacade(this, "PipelinesDashboard", {
+      // Only the alarms are used; each dashboard is billed monthly and nobody reads them.
+      dashboardFactory: new DefaultDashboardFactory(this, "PipelinesDashboardFactory", {
+        dashboardNamePrefix: "PipelinesDashboard",
+        createDashboard: false,
+      }),
       alarmFactoryDefaults: {
         actionsEnabled: true,
         alarmNamePrefix: "Pipelines-",
@@ -292,7 +297,6 @@ export class RunStack extends cdk.Stack {
         datapointsToAlarm: 1,
       },
     })
-      .addLargeHeader("Gnome Pipelines")
       // A scheduled run that fails to start never reaches the task-stopped rule that reports failed runs.
       .monitorLambdaFunction({
         lambdaFunction: triggerFn,
