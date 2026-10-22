@@ -14,7 +14,7 @@ export const DATA_API_FUNCTION = "gnome-pipelines-data-api";
 const NAMESPACES = ["research", "artifacts"];
 // Secrets for gnome_pipelines.credentials, as gnome/pipelines/<name>. Values are set by hand with
 // put-secret-value; the placeholder must match credentials.PLACEHOLDER so an unset secret fails clearly.
-const SECRETS = ["zenrows", "cfbd"];
+const SECRETS = ["zenrows", "cfbd", "x", "anthropic"];
 const SECRET_PLACEHOLDER = "unset";
 
 export interface DataStackProps extends cdk.StackProps {
