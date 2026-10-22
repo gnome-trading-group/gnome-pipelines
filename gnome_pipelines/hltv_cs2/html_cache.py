@@ -145,6 +145,10 @@ class CachePolicy:
 
 
 _IMMUTABLE_KINDS = frozenset({"match"})
+# Pages that show how things stand now (a team's roster, the transfers feed) rather than as of a match. Each
+# day's copy gets its own key instead of overwriting the last: what such a page said on a day is history the
+# roster datasets are rebuilt from, and the newest copy is the one served.
+_SNAPSHOT_KINDS = frozenset({"team", "transfers"})
 
 
 def _research_bucket() -> str:
@@ -177,11 +181,33 @@ class HtmlCache:
 
     # ---- keys ----
 
-    def key_for(self, url: str, *, kind: str) -> str:
+    def key_for(self, url: str, *, kind: str, day: date | None = None) -> str:
+        """The page's key; a snapshot kind's key also names the day it was fetched (default: today, UTC)."""
+        base = self._base_key(url, kind)
+        if kind in _SNAPSHOT_KINDS:
+            return f"{base}/{(day or datetime.now(timezone.utc).date()).isoformat()}.html.gz"
+        return f"{base}.html.gz"
+
+    @staticmethod
+    def _base_key(url: str, kind: str) -> str:
         normalized = normalize_url(url)
         digest = hashlib.sha256(normalized.encode()).hexdigest()[:10]
         slug = re.sub(r"[^a-zA-Z0-9]+", "_", normalized.split("://", 1)[-1]).strip("_")[:90]
-        return f"{kind}/{_shard(kind, normalized)}/{slug}.{digest}.html.gz"
+        return f"{kind}/{_shard(kind, normalized)}/{slug}.{digest}"
+
+    def snapshot_keys(self, url: str, *, kind: str) -> list[str]:
+        """Every stored day's copy of a snapshot page, oldest first."""
+        prefix = self._base_key(url, kind) + "/"
+        found = {str(p.relative_to(self.local_root)) for p in (self.local_root / prefix).glob("*.html.gz")}
+        if self._index is not None:
+            found |= {k for k in self._index if k.startswith(prefix)}
+        else:
+            try:
+                fs, root = resolve_fs(f"{self._remote_root}/{prefix}")
+                found |= {f"{prefix}{p.rsplit('/', 1)[-1]}" for p in fs_list_files(fs, root)}
+            except Exception as exc:
+                logger.warning("cache: could not list %s (%s) — using local copies only", prefix, exc)
+        return sorted(found)
 
     # ---- index ----
 
@@ -215,7 +241,13 @@ class HtmlCache:
         if self.policy.wants_refresh(kind, subject):
             return None
 
-        key = self.key_for(url, kind=kind)
+        if kind in _SNAPSHOT_KINDS:
+            days = self.snapshot_keys(url, kind=kind)
+            if not days:
+                return None
+            key = days[-1]
+        else:
+            key = self.key_for(url, kind=kind)
         local = self.local_root / key
         blob: bytes | None = None
         if local.exists():
@@ -241,8 +273,9 @@ class HtmlCache:
     def put(self, url: str, html: str, *, kind: str, fetched_at: datetime | None = None) -> str | None:
         if not self.policy.write:
             return None
-        key = self.key_for(url, kind=kind)
-        blob = _gzip(html, fetched_at or datetime.now(timezone.utc))
+        fetched_at = fetched_at or datetime.now(timezone.utc)
+        key = self.key_for(url, kind=kind, day=fetched_at.astimezone(timezone.utc).date())
+        blob = _gzip(html, fetched_at)
 
         local = self.local_root / key
         local.parent.mkdir(parents=True, exist_ok=True)

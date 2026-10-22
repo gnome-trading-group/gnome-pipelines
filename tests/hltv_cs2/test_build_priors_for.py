@@ -10,7 +10,7 @@ import pandas as pd
 
 from gnomepy_research.models.cs2.hltv.build_priors import build_priors, build_priors_for
 
-from tests.hltv_cs2.test_feature_blocks import _synthetic_history, _synthetic_players
+from tests.hltv_cs2.test_feature_blocks import _synthetic_history, _synthetic_lineups
 
 
 def _history(n_days=10):
@@ -45,10 +45,15 @@ def _assert_same(a, b):
 
 def test_targets_equal_a_full_rebuild():
     hist = _history()
-    players = _synthetic_players(hist)
     targets = _upcoming(hist, day_offset=1)
-    full = build_priors(pd.concat([hist, targets], ignore_index=True), _rankings(hist), player_stats=players)
-    live = build_priors_for(hist, _rankings(hist), targets, player_stats=players)
+    lineups = _synthetic_lineups(pd.concat([hist, targets], ignore_index=True))
+    moves = pd.DataFrame([{"event_date": hist.match_date.min() + pd.Timedelta(days=3), "kind": "join",
+                           "person_id": int(hist.team_a_lineup_ids.iloc[0][0]), "person_role": "player",
+                           "from_team_id": 0, "to_team_id": int(hist.team_a_id.iloc[0]), "from_status": None,
+                           "to_status": "active"}])
+    full = build_priors(pd.concat([hist, targets], ignore_index=True), _rankings(hist), lineups=lineups,
+                        roster_moves=moves)
+    live = build_priors_for(hist, _rankings(hist), targets, lineups=lineups, roster_moves=moves)
     assert len(live) == len(targets)
     _assert_same(live, full[full.match_id.isin(targets.match_id)])
 

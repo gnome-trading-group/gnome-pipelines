@@ -54,6 +54,7 @@ async def collect_matches(
     veto_rows: list[dict] = []
     h2h_rows: list[dict] = []
     form_rows: list[dict] = []
+    lineup_rows: list[dict] = []
     failed_dates: list[datetime.date] = []
     n_demos_failed = 0
     n_matches = 0
@@ -138,6 +139,7 @@ async def collect_matches(
                         veto_rows.extend(result.get("veto", []))
                         h2h_rows.extend(result.get("h2h", []))
                         form_rows.extend(result.get("recent_form", []))
+                        lineup_rows.extend(result.get("lineups", []))
                         logger.info("[%d/%d] match %d — %d maps parsed (stars=%d)", n, len(matches), match_id, len(result["rows"]), match_stars)
                     else:
                         logger.warning("[%d/%d] match %d — no map rows", n, len(matches), match_id)
@@ -223,7 +225,7 @@ async def collect_matches(
                            len(failed_dates), ", ".join(d.isoformat() for d in failed_dates[:10]))
         if n_demos_failed:
             logger.warning("%d demo(s) failed and were skipped", n_demos_failed)
-        publish_match_data(match_rows, demo_rows, player_rows, veto_rows, h2h_rows, form_rows)
+        publish_match_data(match_rows, demo_rows, player_rows, veto_rows, h2h_rows, form_rows, lineup_rows)
 
 
 async def collect_rankings(

@@ -6,6 +6,7 @@ import pytest
 import api
 import store
 import sync_schedules
+import tasks
 import trigger_pipeline
 from tests.lambdas import fakes
 
@@ -30,7 +31,7 @@ def aws(monkeypatch):
     monkeypatch.setattr(store, "ssm", fakes.Ssm([HLTV, TRAIN]))
     for module in (api, trigger_pipeline, sync_schedules):
         monkeypatch.setattr(module, "table", env["table"], raising=False)
-    monkeypatch.setattr(trigger_pipeline, "ecs", env["ecs"])
+    monkeypatch.setattr(tasks, "ecs", env["ecs"])
     monkeypatch.setattr(api, "ecs", env["ecs"])
     monkeypatch.setattr(api, "scheduler", env["scheduler"])
     monkeypatch.setattr(sync_schedules, "scheduler", env["scheduler"])
@@ -97,7 +98,7 @@ def test_a_scheduled_trigger_that_cant_start_raises_so_it_alarms(aws):
 
 
 def test_ecs_refusing_a_task_fails_the_run_and_the_request(aws, monkeypatch):
-    monkeypatch.setattr(trigger_pipeline, "ecs", fakes.Ecs(failures=[{"reason": "RESOURCE:MEMORY"}]))
+    monkeypatch.setattr(tasks, "ecs", fakes.Ecs(failures=[{"reason": "RESOURCE:MEMORY"}]))
 
     status, body = call("POST", "/research/pipelines/hltv_cs2/runs", {})
 

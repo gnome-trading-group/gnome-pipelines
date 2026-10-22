@@ -20,8 +20,8 @@ MODEL_NAME = "cs2_prematch_preveto"
 
 
 class CS2PrematchTrainParams(PipelineParams):
-    n_estimators: int = Field(1000, gt=0, description="XGBoost boosting rounds, before early stopping")
-    max_depth: int = Field(5, gt=0, description="XGBoost tree depth")
+    n_estimators: int = Field(2000, gt=0, description="XGBoost boosting rounds, before early stopping")
+    max_depth: int = Field(2, gt=0, description="XGBoost tree depth")
 
 
 class CS2PrematchTrainPipeline(Pipeline[CS2PrematchTrainParams]):

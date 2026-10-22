@@ -15,7 +15,7 @@ dependencies = [
 
 [project.optional-dependencies]
 cs2 = [
-    "gnomepy-research[xgboost]",
+    "gnomepy-research[xgboost,pymc]",
     "beautifulsoup4 (>=4.15.0,<5.0.0)",
     "lxml (>=6.0,<7.0)",
     "zenrows (>=1.4.1,<2.0.0)",
@@ -35,7 +35,7 @@ gnome-pipelines = "gnome_pipelines.cli:main"
 packages = [{include = "gnome_pipelines"}]
 
 [tool.poetry.dependencies]
-gnomepy-research = {git = "https://github.com/gnome-trading-group/gnomepy-research.git", tag = "v1.1.2"}
+gnomepy-research = {git = "https://github.com/gnome-trading-group/gnomepy-research.git", tag = "v1.2.1"}
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.4.1"
