@@ -118,3 +118,15 @@ def test_schedules_fire_in_season_only_and_the_afternoon_run_spares_context():
         CfbUpdateParams.model_validate(s.params)
         assert s.expression.endswith("* 1,8-12 ? *)")
     assert CfbUpdateParams.model_validate({"refresh_context": "false"}).refresh_context is False
+
+
+def test_a_table_with_no_rows_for_the_season_is_skipped_not_published(stubbed, monkeypatch):
+    """Before 2021 CFBD has no transfer portal (and before 2015 no talent), so that table comes back empty."""
+    games = pd.DataFrame({"kickoff": pd.to_datetime(["2015-10-09 23:00"], utc=True), "completed": [True],
+                          "home_points": [24.0]})
+    monkeypatch.setattr(pipeline, "build_all", lambda client, years: {"cfb_games": games, "cfb_portal": pd.DataFrame(),
+                                                                       "cfb_plays": pd.DataFrame({"x": [1]})})
+    monkeypatch.setattr(pipeline, "run_checks", lambda t: [])
+    out = pipeline.CfbUpdatePipeline().run(CfbUpdateParams(season=2015, features=False,
+                                                           cache_root="s3://x/apicache/cfbd")).outputs
+    assert stubbed.published == ["cfb_games", "cfb_plays"] and out["rows"]["cfb_portal"] == 0
