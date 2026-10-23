@@ -93,8 +93,10 @@ class CfbUpdatePipeline(Pipeline[CfbUpdateParams]):
         ds = dataset_store()
         rows = {}
         for name, df in tables.items():
-            ds.publish(SPECS[name], df)
             rows[name] = len(df)
+            # Before 2021 CFBD has no transfer portal, and before 2015 no talent: nothing to publish for that season.
+            if not df.empty:
+                ds.publish(SPECS[name], df)
         if params.features:
             for name, df in build_features(SourceData.load(ds), [season]).items():
                 ds.publish(FEATURE_SPECS[name], df)
