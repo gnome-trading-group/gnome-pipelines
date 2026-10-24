@@ -569,6 +569,46 @@ TEAM_WEEK_POSTERIOR = TableSpec(
     key=("cutoff", "team_id", "likelihood"),
 )
 
+# B0's pregame win probability for each upcoming game, one row per refresh: what the CFB pregame paper sessions trade
+# against, as of generated_at. Computed on a laptop by gnomepy-research's cfb_win_probability live predictor (B0 is not
+# in models/ yet) and published by gnome_pipelines/cfb/pregame.py. Ranks are B0's FBS strength ranks at the game's
+# cutoff; *_qb_p is the QB status service's p_start for the starter the model assumed (null without a snapshot).
+PREGAME_PREDICTIONS = TableSpec(
+    "cfb_pregame_predictions",
+    pa.schema([
+        pa.field("game_id", pa.int64(), nullable=False),
+        pa.field("season", pa.int64()),
+        pa.field("week", pa.int64()),
+        pa.field("season_type", pa.string()),
+        pa.field("kickoff", pa.timestamp("us", tz="UTC")),
+        pa.field("home_id", pa.int64()),
+        pa.field("away_id", pa.int64()),
+        pa.field("home_team", pa.string()),
+        pa.field("away_team", pa.string()),
+        pa.field("neutral_site", pa.bool_()),
+        pa.field("p_home", pa.float64()),
+        pa.field("p_home_lo90", pa.float64()),
+        pa.field("p_home_hi90", pa.float64()),
+        pa.field("home_qb_id", pa.string()),
+        pa.field("away_qb_id", pa.string()),
+        pa.field("home_qb_p", pa.float64()),
+        pa.field("away_qb_p", pa.float64()),
+        pa.field("home_qb_delta", pa.float64()),
+        pa.field("away_qb_delta", pa.float64()),
+        pa.field("home_rank", pa.int64()),
+        pa.field("away_rank", pa.int64()),
+        pa.field("fbs_teams", pa.int64()),
+        pa.field("home_newcomer", pa.bool_()),
+        pa.field("away_newcomer", pa.bool_()),
+        pa.field("model", pa.string()),
+        pa.field("model_version", pa.string()),
+        pa.field("qb_status_at", pa.timestamp("us", tz="UTC")),
+        pa.field("generated_at", pa.timestamp("us", tz="UTC"), nullable=False),
+    ]),
+    key=("game_id", "generated_at"),
+    partition_by=("generated_at", "day"),
+)
+
 ALL = (
     COACHES,
     DRIVES,
@@ -578,6 +618,7 @@ ALL = (
     PLAYS,
     PORTAL,
     PREGAME_FEATURES,
+    PREGAME_PREDICTIONS,
     RECRUITING_TEAMS,
     RECRUITS,
     RETURNING,
