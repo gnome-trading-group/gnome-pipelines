@@ -72,7 +72,8 @@ cd cdk && npm ci && npx cdk synth
   Names: `zenrows`, `cfbd`, `x`, `anthropic` (`SECRETS` in data-stack.ts). A placeholder value `unset` fails
   loudly. Set real values only with `aws secretsmanager put-secret-value --profile dev|prod`, never in code.
 - `cfb_qb_status` runs with X and Claude off when `gnome/pipelines/x` or `gnome/pipelines/anthropic` is unset, and
-  says so in its output rather than failing.
+  says so in its output rather than failing. It caps X spend with `x_monthly_usd` (default 60; sweeps stop at 80%)
+  and `x_daily_usd` (default 3), counted at $0.005 per post returned and mirrored with the state.
 - ZenRows credits are reserved for prod pipelines. Ad-hoc and local HLTV work uses `-p fetcher=chrome` (visible
   local Chrome, free) or `-p fetcher=cache` (no network). `fetcher=chrome` refuses to run in a Fargate task.
   `cs2_upcoming` caps spend with `daily_credit_budget` (default 15000/UTC day) and slows refetches past it.

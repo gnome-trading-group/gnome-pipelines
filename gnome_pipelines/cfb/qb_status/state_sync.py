@@ -1,7 +1,7 @@
 """The service's small state files mirrored to S3, beside the CFBD response mirror in the research bucket.
 
 A Fargate task starts with an empty disk. Without the mirror each daily run would forget the month's X spend (so the
-$25 cap would reset), lose every query's since_id (so it would pay again for the last day of posts) and have Claude
+monthly cap would reset), lose every query's since_id (so it would pay again for the last day of posts) and have Claude
 read every headline again. A run pulls the files first and pushes whichever changed, every minute and at the end.
 """
 from __future__ import annotations

@@ -43,9 +43,9 @@ from gnome_pipelines.cfb.qb_status.schedule import (WINDOW_AFTER, expected_relea
                                                      schedule_rows)
 from gnome_pipelines.cfb.qb_status.store import StatusStore, open_store
 from gnome_pipelines.cfb.qb_status.watches import is_unsettled, unsettled_watches, update_watches, watched_teams
-from gnome_pipelines.cfb.qb_status.x_scan import (LOOKBACK_POSTS, Query, Registry, XBudget, lookback_query,
-                                                   post_time, posts_to_evidence, registry_frame, sweep_queries,
-                                                   watch_queries)
+from gnome_pipelines.cfb.qb_status.x_scan import (DAILY_CAP_USD, LOOKBACK_POSTS, MONTHLY_USD, Query, Registry, XBudget,
+                                                   lookback_query, post_time, posts_to_evidence, registry_frame,
+                                                   sweep_queries, watch_queries)
 from gnome_pipelines.cfb.qb_status.x_source import ReadBudget, XSource
 
 CONF_CODES = {"SEC": "SEC", "Big Ten": "B10", "Big 12": "B12", "ACC": "ACC", "American Athletic": "American",
@@ -648,7 +648,8 @@ def build_service(ctx: Context, espn: bool = True, market: bool = True, news: bo
 
 def service_context(research: DatasetStore, status: StatusStore, season: int, use_x: bool = True,
                     use_claude: bool = True, say: Callable[[str], None] = print,
-                    cache_dir: Path | None = None) -> Context:
+                    cache_dir: Path | None = None, x_state: Path = X_STATE, x_monthly_usd: float = MONTHLY_USD,
+                    x_daily_usd: float = DAILY_CAP_USD) -> Context:
     """The Context with X and Claude switched on where their keys can be found (environment, else Secrets Manager)."""
     x = XSource(budget=ReadBudget(10**9)) if use_x else None   # XBudget is the real governor
     if x is not None and not x.enabled:
@@ -659,8 +660,9 @@ def service_context(research: DatasetStore, status: StatusStore, season: int, us
             extractor = ClaudeExtractor()
         except NotConfigured as e:
             say(f"Claude is off ({e}); posts and headlines are read by rules and wait for review")
-    return Context(research, status, season, cache_dir=cache_dir, x=x if x is not None and x.enabled else None,
-                   extractor=extractor)
+    x = x if x is not None and x.enabled else None
+    budget = XBudget(x_state, monthly_usd=x_monthly_usd, daily_cap_usd=x_daily_usd) if x is not None else None
+    return Context(research, status, season, cache_dir=cache_dir, x=x, x_budget=budget, extractor=extractor)
 
 
 def _print_team(ctx: Context, team: str, now: datetime) -> None:

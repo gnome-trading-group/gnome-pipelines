@@ -445,3 +445,13 @@ def test_held_back_claims_about_a_former_starter_apply_once_the_team_is_unsettle
     top = snap.sort_values("computed_at").drop_duplicates("player_id", keep="last").sort_values("p_start").iloc[-1]
     assert top["player_id"] == "9000001" and top["p_start"] >= 0.9
     assert "auto:unsettled" in set(status.evidence()["reviewer"].dropna())
+
+
+def test_service_context_sets_the_x_budget_from_its_caps(tmp_path, monkeypatch):
+    from gnome_pipelines.cfb.qb_status.service import service_context
+    monkeypatch.setenv("X_BEARER_TOKEN", "token")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    status = StatusStore(DatasetStore(CatalogConfig(local_warehouse=tmp_path / "wh")))
+    ctx = service_context(Research(fail=False), status, 2026, use_claude=False, say=lambda s: None,
+                          cache_dir=tmp_path / "cache", x_state=tmp_path / "x.json", x_monthly_usd=60.0, x_daily_usd=3.0)
+    assert (ctx.x_budget.cap, ctx.x_budget.daily_cap) == (12000, 600)

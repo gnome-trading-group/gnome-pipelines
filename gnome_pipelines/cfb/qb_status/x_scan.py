@@ -12,6 +12,8 @@ Saturday), about $9 a month. Everything those accounts post would be ~2,300 a da
 - lookback: after an unexplained market move, one relevancy-sorted search of anyone over the last three days, capped
   at LOOKBACK_POSTS.
 
+Spend is capped per month and per UTC day (XBudget; the pipeline's x_monthly_usd and x_daily_usd parameters).
+
 Following X's terms, evidence keeps the post id, handle and our claim, never the post's text.
 """
 from __future__ import annotations
@@ -32,7 +34,7 @@ from gnome_pipelines.cfb.qb_status.x_source import QUERY_LIMIT, SWEEP_SHARE, x_e
 from gnome_pipelines.datasets.qb_status import SOURCES
 
 PRICE_PER_POST = 0.005
-MONTHLY_USD = 25.0
+MONTHLY_USD = 60.0
 DAILY_ALERT_USD = 1.5
 DAILY_CAP_USD = 3.0
 LOOKBACK_POSTS = 50

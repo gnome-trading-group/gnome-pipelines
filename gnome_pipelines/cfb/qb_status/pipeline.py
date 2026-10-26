@@ -17,6 +17,7 @@ from gnome_pipelines.cfb.qb_status.extract import CLAUDE_CACHE
 from gnome_pipelines.cfb.qb_status.service import X_STATE, build_service, service_context
 from gnome_pipelines.cfb.qb_status.state_sync import StateMirror, default_remote_root
 from gnome_pipelines.cfb.qb_status.store import StatusStore, open_store
+from gnome_pipelines.cfb.qb_status.x_scan import DAILY_CAP_USD, MONTHLY_USD
 from gnome_pipelines.stores import dataset_store
 
 STATE_DIR = X_STATE.parent
@@ -37,6 +38,9 @@ class QbStatusParams(PipelineParams):
     claude: bool = Field(True, description="have Claude read posts and headlines when its key is set")
     state_root: str | None = Field(None, pattern=r"^(s3://|/)\S+$", description=(
         "S3 root of the mirrored state; leave empty for s3://<research bucket>/qb_status/state"))
+    x_monthly_usd: float = Field(MONTHLY_USD, ge=0, description=(
+        "X spend cap per calendar month, at $0.005 per post returned; sweeps stop at 80% of it"))
+    x_daily_usd: float = Field(DAILY_CAP_USD, ge=0, description="X spend cap per UTC day, so one busy day can't spend the month")
 
 
 class QbStatusPipeline(Pipeline[QbStatusParams]):
@@ -56,7 +60,8 @@ class QbStatusPipeline(Pipeline[QbStatusParams]):
         said: list[str] = []
         season = now.year if now.month >= NEW_SEASON_MONTH else now.year - 1
         ctx = service_context(dataset_store(), StatusStore(status_store(params.prod)), season, use_x=params.x,
-                              use_claude=params.claude, say=said.append)
+                              use_claude=params.claude, say=said.append, x_monthly_usd=params.x_monthly_usd,
+                              x_daily_usd=params.x_daily_usd)
         svc = build_service(ctx, mirror=mirror)
         try:
             svc.run_until(now + timedelta(hours=params.hours))
