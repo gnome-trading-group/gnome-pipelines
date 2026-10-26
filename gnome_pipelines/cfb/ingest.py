@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import re
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pandas as pd
@@ -21,6 +22,10 @@ from gnome_pipelines.datasets import cfb
 from gnome_pipelines.stores import dataset_store
 
 SEASON_TYPES = ("regular", "postseason")
+# A week counts as played once any of its games is final, but its Saturday games finish days after its midweek ones:
+# week 8 of 2026 was cached on Oct 22 with only its Tuesday-Wednesday games and never fetched again. A week's plays are
+# refetched while any of its games finished within RECENT, which also picks up CFBD's late corrections.
+RECENT = timedelta(days=8)
 
 
 def _season_requests(client: CfbdClient, year: int) -> list[tuple[str, dict]]:
@@ -39,15 +44,30 @@ def _season_requests(client: CfbdClient, year: int) -> list[tuple[str, dict]]:
     return reqs
 
 
-def fetch(client: CfbdClient, years: list[int], refresh_current: int | None = None) -> None:
+def _recent_weeks(client: CfbdClient, year: int, now: datetime) -> set[tuple[str, int]]:
+    """(season type, week) for weeks with a game that finished within RECENT of now."""
+    out = set()
+    for st in SEASON_TYPES:
+        for g in client.get("/games", {"year": year, "seasonType": st, "classification": "fbs"}):
+            if g["completed"] and g.get("startDate"):
+                kick = datetime.fromisoformat(g["startDate"].replace("Z", "+00:00"))
+                if now - RECENT <= kick <= now:
+                    out.add((st, g["week"]))
+    return out
+
+
+def fetch(client: CfbdClient, years: list[int], refresh_current: int | None = None, now: datetime | None = None) -> None:
+    now = now or datetime.now(timezone.utc)
     for year in years:
         for st in SEASON_TYPES:
             client.get("/games", {"year": year, "seasonType": st, "classification": "fbs"},
                        refresh=(year == refresh_current))
         reqs = _season_requests(client, year)
-        # The in-progress season's season-level endpoints grow every week, so refetch them;
-        # its completed weeks of plays are immutable and stay cached.
-        refresh = {i for i, (ep, _) in enumerate(reqs) if year == refresh_current and ep != "/plays"}
+        # The in-progress season's season-level endpoints grow every week, so refetch them, and its recent weeks of
+        # plays too; older weeks of plays are settled and stay cached.
+        recent = _recent_weeks(client, year, now) if year == refresh_current else set()
+        refresh = {i for i, (ep, p) in enumerate(reqs) if year == refresh_current
+                   and (ep != "/plays" or (p["seasonType"], p["week"]) in recent)}
         todo = [r for i, r in enumerate(reqs) if i in refresh or not client.is_cached(*r)]
         if todo:
             client.ensure_budget(len(todo))
