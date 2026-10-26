@@ -17,6 +17,13 @@ from gnome_pipelines.credentials import secret
 
 BASE_URL = "https://api.collegefootballdata.com"
 CACHE_DIR = Path.home() / ".cache" / "gnomepy" / "cfbd"
+# A connection reset mid-response or an outage of a minute or two failed scheduled runs on Oct 25 (502s for over the
+# 31 s the old retries waited) and Oct 26 (reset while reading the body). Waits of 5, 10, 20, 40, 80 and 160 s ride out
+# about five minutes before giving up.
+ATTEMPTS = 7
+BACKOFF = 5.0
+RETRYABLE = (requests.exceptions.ConnectionError, requests.exceptions.ChunkedEncodingError,
+             requests.exceptions.Timeout)
 
 
 class BudgetExceeded(RuntimeError):
@@ -33,11 +40,27 @@ class CfbdClient:
         self._session.headers["Authorization"] = f"Bearer {self._api_key}"
         self.calls_made = 0
 
+    def _request(self, url: str, params: dict | None = None, timeout: float = 120) -> requests.Response:
+        """GET with retries on 429, 5xx and dropped connections; any other error is raised at once."""
+        for attempt in range(ATTEMPTS):
+            last = attempt == ATTEMPTS - 1
+            try:
+                resp = self._session.get(url, params=params, timeout=timeout)
+            except RETRYABLE:
+                if last:
+                    raise
+                time.sleep(BACKOFF * 2 ** attempt)
+                continue
+            if (resp.status_code == 429 or resp.status_code >= 500) and not last:
+                time.sleep(BACKOFF * 2 ** attempt)
+                continue
+            resp.raise_for_status()
+            return resp
+        raise AssertionError("unreachable")
+
     def info(self) -> dict:
         """Quota status. This endpoint does not count against the quota."""
-        resp = self._session.get(f"{BASE_URL}/info", timeout=30)
-        resp.raise_for_status()
-        return resp.json()
+        return self._request(f"{BASE_URL}/info", timeout=30).json()
 
     def remaining_calls(self) -> int:
         return int(self.info()["remainingCalls"])
@@ -64,15 +87,7 @@ class CfbdClient:
             with gzip.open(path, "rt") as f:
                 return json.load(f)
 
-        for attempt in range(5):
-            resp = self._session.get(f"{BASE_URL}{endpoint}", params=params, timeout=120)
-            if resp.status_code == 429 or resp.status_code >= 500:
-                time.sleep(2 ** attempt)
-                continue
-            resp.raise_for_status()
-            break
-        else:
-            resp.raise_for_status()
+        resp = self._request(f"{BASE_URL}{endpoint}", params=params)
         self.calls_made += 1
         data = resp.json()
 
