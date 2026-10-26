@@ -12,6 +12,8 @@ Saturday), about $9 a month. Everything those accounts post would be ~2,300 a da
 - lookback: after an unexplained market move, one relevancy-sorted search of anyone over the last three days, capped
   at LOOKBACK_POSTS.
 
+Spend is capped per month and per UTC day (XBudget; the pipeline's x_monthly_usd and x_daily_usd parameters).
+
 Following X's terms, evidence keeps the post id, handle and our claim, never the post's text.
 """
 from __future__ import annotations
@@ -20,7 +22,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -32,8 +34,9 @@ from gnome_pipelines.cfb.qb_status.x_source import QUERY_LIMIT, SWEEP_SHARE, x_e
 from gnome_pipelines.datasets.qb_status import SOURCES
 
 PRICE_PER_POST = 0.005
-MONTHLY_USD = 25.0
+MONTHLY_USD = 60.0
 DAILY_ALERT_USD = 1.5
+DAILY_CAP_USD = 3.0
 LOOKBACK_POSTS = 50
 CREDIBILITY = {"normal": 1.0, "low": 0.5}
 UNLISTED_CREDIBILITY = 0.25            # accounts found by gap and lookback searches of anyone
@@ -43,7 +46,8 @@ STATUS = ["injury", "injured", "hurt", "questionable", "doubtful", "ruled out", 
           "status"]
 STRONG = ["ruled out", "out for the season", "will not play", "won't play", "won't start", "will not start",
           "expected to start", "will start", "left the game", "carted off", "game-time decision", "season-ending"]
-WATCH_EXTRA = ["did not practice", "limited", "practiced", "day-to-day", "available", "return"]
+WATCH_EXTRA = ["did not practice", "limited", "practiced", "day-to-day", "available", "return", "to start", "QB1",
+               "named the starter", "gets the start", "get the start", "the nod"]
 TAIL = "-is:retweet"
 
 
@@ -186,14 +190,25 @@ def lookback_query(team: str, qbs: list[tuple[str, str]]) -> Query:
     return Query(f"lookback:{team}", f"{_or(_full(qbs))} {status}", "lookback", (team,))
 
 
+X_EPOCH_MS = 1288834974657
+
+
+def post_time(post_id: str) -> datetime:
+    """When a post was created, from its id (X ids carry milliseconds since X_EPOCH_MS above bit 22)."""
+    return datetime.fromtimestamp(((int(post_id) >> 22) + X_EPOCH_MS) / 1000, tz=timezone.utc)
+
+
 class XBudget:
     """Monthly X spend from the posts we were billed for, persisted with each query's since_id. Sweeps stop at
-    SWEEP_SHARE of the cap; watches and lookbacks may use the rest."""
+    SWEEP_SHARE of the cap; watches and lookbacks may use the rest. Everything stops for the day at daily_cap_usd, so
+    one busy day can't spend the month."""
 
-    def __init__(self, path: Path, monthly_usd: float = MONTHLY_USD, daily_alert_usd: float = DAILY_ALERT_USD) -> None:
+    def __init__(self, path: Path, monthly_usd: float = MONTHLY_USD, daily_alert_usd: float = DAILY_ALERT_USD,
+                 daily_cap_usd: float = DAILY_CAP_USD) -> None:
         self.path = Path(path)
         self.cap = int(round(monthly_usd / PRICE_PER_POST))
         self.daily_alert = int(round(daily_alert_usd / PRICE_PER_POST))
+        self.daily_cap = int(round(daily_cap_usd / PRICE_PER_POST))
         self.state = {"month": "", "posts_month": 0, "day": "", "posts_day": 0, "since": {}}
         if self.path.exists():
             self.state.update(json.loads(self.path.read_text()))
@@ -212,7 +227,7 @@ class XBudget:
     def allow(self, kind: str, now: datetime) -> bool:
         self._roll(now)
         cap = self.cap * (SWEEP_SHARE if kind in ("sweep", "national", "gap") else 1.0)
-        return self.state["posts_month"] < cap
+        return self.state["posts_month"] < cap and self.state["posts_day"] < self.daily_cap
 
     def charge(self, n: int, now: datetime) -> bool:
         """Record n billed posts; True the first time today's spend crosses the daily alert."""

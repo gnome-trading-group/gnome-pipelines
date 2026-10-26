@@ -1,13 +1,17 @@
-"""Start probabilities for a team's candidate QBs, as a pure function of the evidence known at as_of (rule v2).
+"""Start probabilities for a team's candidate QBs, as a pure function of the evidence known at as_of (rule v3).
 
-Rule v2:
+Rule v3:
 1. Each candidate's latest availability claim wins. Among official reports a later slot beats an earlier one; a
    non-official claim beats the official one only if we saw it later.
 2. Availability comes from AVAILABILITY; left_game_injured 0.5, not_starting 0, returned 1, no claim 1.
-3. Role claims, applied in the order seen: expected_starter gives that QB a 0.90 base (the rest share 0.10);
-   qb_change gives the new QB the starter's base and halves the old starter's.
-4. A season starter who isn't the last starter, has an injury on record from an earlier game, and is now probable
-   or better swaps bases with the current starter: he is back from injury and takes the job.
+3. A former starter (he started a game this season but not the last one) with a claim for this game saying he is
+   probable or better is back: his base becomes RETURN_HEALTHY[games since his last start] and the others scale to
+   the rest. No claim is not good news: without one his base stays the measured return rate. No injury on record is
+   needed (most injuries predate what the service has seen), and the measured share already blends injured and
+   benched starters. Among several, the one with the most starts.
+4. Role claims, applied in the order seen and after rule 3, so a report of who starts beats the returning-starter
+   rule: expected_starter gives that QB a 0.90 base (the rest share 0.10); qb_change gives the new QB the starter's
+   base and halves the old starter's.
 5. The bases are the chance each QB is the coach's intended starter. If the intended starter can't play, the job
    goes down the depth chart (highest base first), each QB taking it with his own availability. Whatever is left
    when everyone has been tried goes to "unknown". So a questionable backup never outranks a questionable starter,
@@ -23,15 +27,17 @@ import pandas as pd
 
 from gnome_pipelines.cfb.qb_status.evidence import AVAILABILITY
 
-RULE_VERSION = "v2"
+RULE_VERSION = "v3"
 SLOT_ORDER = {"Initial": 0, "Update 1": 1, "Update 2": 2, "Game Day": 3}
 EXTRA_AVAILABILITY = {"left_game_injured": 0.5, "not_starting": 0.0, "returned": 1.0}
 AVAILABILITY_STATUSES = set(AVAILABILITY) | set(EXTRA_AVAILABILITY)
 ROLE_STATUSES = {"expected_starter", "qb_change"}
 TEAM_LEVEL = {"left_game_injured", "qb_change"}
 USED_STATES = {"auto", "confirmed"}
-INJURY_STATUSES = {s for s, a in AVAILABILITY.items() if a < 1.0} | {"left_game_injured"}
 RETURN_AVAILABILITY = AVAILABILITY["probable"]
+# How often a season starter who missed 1, 2, 3+ games starts once healthy, FBS 2016-24 (calibrate.py): the midpoint of
+# "he starts again later that season" (0.55, 0.46, 0.51) and "he threw a pass in that game" (0.75, 0.61, 0.48).
+RETURN_HEALTHY = {1: 0.65, 2: 0.53, 3: 0.49}
 UNKNOWN = "unknown"
 COLUMNS = ["game_id", "team_id", "player_id", "p_start", "official_status", "official_slot", "evidence_ids", "reason",
            "rule_version"]
@@ -89,22 +95,28 @@ def _latest_claims(ev: pd.DataFrame, pid: str) -> tuple[pd.Series | None, pd.Ser
     return winner, latest_official
 
 
-def _returning_starter(cands: pd.DataFrame, evidence: pd.DataFrame, game_id: int, team_id: int, as_of: datetime,
-                       avail: dict[str, float]) -> str | None:
-    """The season starter coming back from injury, if he is probable or better for this game."""
-    if not {"season_starter", "last_starter"} <= set(cands.columns) or evidence.empty:
+def _returning_starter(cands: pd.DataFrame, claimed: dict[str, float]) -> str | None:
+    """The former starter coming back: started this season, not last time, and claimed probable or better for this
+    game. `claimed` holds availability from claims only, so a player nobody has reported on is not back."""
+    if "last_starter" not in cands.columns:
         return None
-    s = cands.loc[cands["season_starter"].astype(bool) & ~cands["last_starter"].astype(bool), "player_id"]
-    if s.empty:
+    starts = cands["starts"] if "starts" in cands.columns else cands.get(
+        "season_starter", pd.Series(False, index=cands.index)).astype(int)
+    pool = cands.assign(_starts=starts)
+    pool = pool[(pool["_starts"] > 0) & ~pool["last_starter"].astype(bool)]
+    pool = pool[[claimed.get(str(p), 0.0) >= RETURN_AVAILABILITY for p in pool["player_id"]]]
+    if pool.empty:
         return None
-    pid = str(s.iloc[0])
-    if avail.get(pid, 0.0) < RETURN_AVAILABILITY:
-        return None
-    seen = pd.to_datetime(evidence["first_seen_at"], utc=True)
-    hurt = evidence[(evidence["team_id"] == team_id) & (evidence["player_id"].astype(str) == pid)
-                    & (seen <= pd.Timestamp(as_of)) & evidence["review_state"].isin(USED_STATES)
-                    & (evidence["game_id"] != game_id) & evidence["status"].isin(INJURY_STATUSES)]
-    return pid if len(hurt) else None
+    return str(pool.sort_values("_starts", ascending=False, kind="stable")["player_id"].iloc[0])
+
+
+def _return_share(base: dict[str, float], pid: str, missed: int) -> dict[str, float]:
+    share = RETURN_HEALTHY[min(max(missed, 1), 3)]
+    rest = {k: v for k, v in base.items() if k != pid}
+    total = sum(rest.values())
+    out = {k: (1 - share) * (v / total if total > 0 else 1 / len(rest)) for k, v in rest.items()}
+    out[pid] = share if rest else 1.0
+    return out
 
 
 def _depth_chart(base: dict[str, float], avail: dict[str, float]) -> tuple[dict[str, float], float]:
@@ -136,12 +148,13 @@ def team_status(game_id: int, team_id: int, cands: pd.DataFrame, evidence: pd.Da
             base.setdefault(pid, 0.0)
     ev = ev[ev["player_id"].astype(str).isin(base)]
     used: dict[str, list[str]] = {pid: [] for pid in base}
-    base = _apply_roles(base, ev, used)
 
-    avail, official, why = {}, {}, {}
+    avail, claimed, official, why = {}, {}, {}, {}
     for pid in base:
         winner, latest_official = _latest_claims(ev, pid)
         avail[pid] = _availability(winner["status"]) if winner is not None else 1.0
+        if winner is not None:
+            claimed[pid] = avail[pid]
         if latest_official is not None:
             official[pid] = (latest_official["status"], latest_official["report_slot"])
         if winner is not None:
@@ -152,13 +165,14 @@ def team_status(game_id: int, team_id: int, cands: pd.DataFrame, evidence: pd.Da
 
     p: dict[str, float] = {}
     if base:
-        back = _returning_starter(cands, evidence, game_id, team_id, as_of, avail)
+        back = _returning_starter(cands, claimed)
         if back is not None:
-            top = max(base, key=lambda k: (base[k], k))
-            if top != back:
-                base[back], base[top] = base[top], base[back]
-                note = "back from injury, takes the starter's share"
-                why[back] = f"{why[back]}; {note}" if back in why else note
+            missed = cands.set_index(cands["player_id"].astype(str))["missed"].get(back, 1) \
+                if "missed" in cands.columns else 1
+            base = _return_share(base, back, int(missed))
+            note = "back from injury"
+            why[back] = f"{why[back]}; {note}" if back in why else note
+        base = _apply_roles(base, ev, used)
         p, unknown = _depth_chart(base, avail)
         if unknown > 1e-12:
             p[UNKNOWN] = unknown

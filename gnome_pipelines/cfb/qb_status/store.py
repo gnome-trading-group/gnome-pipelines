@@ -15,7 +15,7 @@ from gnomepy.data.datasets import INGESTED_AT
 from pyiceberg.exceptions import NoSuchTableError
 from pyiceberg.expressions import EqualTo
 
-from gnome_pipelines.cfb.qb_status.evidence import Evidence, evidence_frame, evidence_id
+from gnome_pipelines.cfb.qb_status.evidence import Evidence, evidence_frame, evidence_from_row, evidence_id
 from gnome_pipelines.datasets.qb_status import (ALL, EVIDENCE, HEALTH, PLAYERS, REPORT_SCHEDULE, SNAPSHOTS, SOURCES,
                                                 WATCHES)
 
@@ -70,23 +70,6 @@ def copy_tables(src: DatasetStore, dst: DatasetStore, specs=ALL) -> dict[str, in
         if batches:
             copied[spec.name] = sum(len(rows) for _, rows in batches)
     return copied
-
-
-def _plain(v):
-    if v is None or (not isinstance(v, (list, dict)) and pd.isna(v)):
-        return None
-    if isinstance(v, pd.Timestamp):
-        return v.to_pydatetime()
-    return v.item() if hasattr(v, "item") else v
-
-
-def _to_evidence(row: dict) -> Evidence:
-    values = {k: _plain(row.get(k)) for k in EVIDENCE.schema.names}
-    for k in ("game_id", "team_id", "week", "season"):
-        if values[k] is not None:
-            values[k] = int(values[k])
-    values["backfilled"] = bool(values["backfilled"])
-    return Evidence(**values)
 
 
 def _snapshot_value(r: dict) -> tuple:
@@ -153,7 +136,7 @@ class StatusStore:
             return []
         self._ids |= set(fresh["evidence_id"])
         self._evidence = pd.concat([self._evidence, fresh[EVIDENCE.schema.names]], ignore_index=True)
-        return [_to_evidence(r) for r in fresh.to_dict("records")]
+        return [evidence_from_row(r) for r in fresh.to_dict("records")]
 
     def evidence(self, as_of: datetime | None = None) -> pd.DataFrame:
         if as_of is not None:

@@ -103,3 +103,45 @@ def test_x_credibility_comes_from_the_registry_and_unlisted_accounts_count_littl
     assert (c("x_post", "BeatOne"), c("x_post", "SiteLow"), c("x_post", "RandomFan")) == (1.0, 0.5,
                                                                                          UNLISTED_CREDIBILITY)
     assert c("news", "Some Paper") == NEWS_CREDIBILITY and c("market_alarm", "kalshi") == 0.0
+
+
+def test_two_outlets_saying_the_incumbent_starts_apply():
+    incumbent = {501: "9000001"}.get
+    new = [claim("On3", status="expected_starter", hedge="expected", source_type="news", n=1),
+           claim("247Sports", status="expected_starter", hedge="per_sources", source_type="news", n=2)]
+    out = decide(new, evidence_frame([]), cred, T0, incumbent=incumbent)
+    assert [(e.review_state, e.reviewer) for e in out] == [("pending", None), ("auto", "auto:incumbent")]
+
+
+def test_two_outlets_naming_a_different_starter_still_wait():
+    incumbent = {501: "9000002"}.get
+    new = [claim("On3", status="expected_starter", hedge="expected", source_type="news", n=1),
+           claim("247Sports", status="expected_starter", hedge="per_sources", source_type="news", n=2)]
+    out = decide(new, evidence_frame([]), cred, T0, incumbent=incumbent)
+    assert [e.review_state for e in out] == ["pending", "pending"]
+
+
+def test_one_outlet_on_the_incumbent_is_not_enough():
+    out = decide([claim("On3", status="expected_starter", hedge="expected", source_type="news")], evidence_frame([]),
+                 cred, T0, incumbent={501: "9000001"}.get)
+    assert out[0].review_state == "pending"
+
+
+def test_when_the_starter_is_up_in_the_air_two_outlets_on_any_candidate_apply():
+    new = [claim("Mercury News", status="expected_starter", hedge="expected", source_type="news", n=1),
+           claim("RotoWire", status="expected_starter", hedge="expected", source_type="news", n=2)]
+    out = decide(new, evidence_frame([]), cred, T0, incumbent={501: "9000002"}.get, unsettled=lambda tid: tid == 501)
+    assert [(e.review_state, e.reviewer) for e in out] == [("pending", None), ("auto", "auto:unsettled")]
+
+
+def test_pending_role_claims_are_redecided_as_new_rows_when_the_starter_becomes_unsettled():
+    from gnome_pipelines.cfb.qb_status.autoapply import redecide
+    held = [claim("Coloradoan", status="expected_starter", hedge="expected", source_type="news", n=1),
+            claim("Gazette", status="expected_starter", hedge="expected", source_type="news", n=2)]
+    existing = evidence_frame(held)
+    later = T0 + timedelta(hours=3)
+    out = redecide(existing, cred, later, team_id=501, game_id=77, unsettled=True)
+    assert len(out) == 2 and all(e.review_state == "auto" and e.reviewer == "auto:unsettled" for e in out)
+    assert all(e.first_seen_at == later for e in out)
+    assert {e.evidence_id for e in out}.isdisjoint({e.evidence_id for e in held})
+    assert redecide(existing, cred, later, team_id=501, game_id=77, unsettled=False) == []

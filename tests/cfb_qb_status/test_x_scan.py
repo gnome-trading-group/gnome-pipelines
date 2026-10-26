@@ -204,3 +204,19 @@ def test_posts_are_read_with_the_team_name_and_labelled_with_the_reader():
 def test_unlisted_accounts_get_low_credibility(registry):
     assert registry.credibility("TestvilleBeat") == 1.0 and registry.credibility("TestvilleSite") == 0.5
     assert registry.credibility("SomeoneElse") == 0.25
+
+
+def test_watch_asks_beat_writers_who_will_start(registry):
+    qs = watch_queries(registry, "Testville State", QBS["Testville State"])
+    text = " ".join(q.text for q in qs)
+    assert '"to start"' in text and ' QB1 ' in text and '"named the starter"' in text
+    assert all(len(q.text) <= QUERY_LIMIT for q in qs)
+
+
+def test_budget_stops_everything_for_the_day_at_the_daily_cap(tmp_path):
+    b = XBudget(tmp_path / "x.json", monthly_usd=25.0, daily_cap_usd=1.0)    # 200 posts a day
+    b.charge(199, T0)
+    assert b.allow("watch", T0)
+    b.charge(1, T0)
+    assert not b.allow("watch", T0) and not b.allow("lookback", T0) and not b.allow("sweep", T0)
+    assert b.allow("watch", T0 + timedelta(days=1))

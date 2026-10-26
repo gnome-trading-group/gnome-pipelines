@@ -3,7 +3,8 @@ from datetime import datetime, timezone
 import pandas as pd
 import pytest
 
-from gnome_pipelines.cfb.qb_status.candidates import candidates, game_starters, next_game, with_roster_ids
+from gnome_pipelines.cfb.qb_status.candidates import (HOLD_RATE, KEEP_RATE, RETURN_RATE, candidates, game_starters,
+                                                      next_game, with_roster_ids)
 
 UTC = timezone.utc
 GAMES = pd.DataFrame([
@@ -32,13 +33,23 @@ def test_game_starters_takes_first_passer():
     assert dict(zip(s["game_id"], s["passer_key"])) == {1: "T", 2: "T", 3: "P"}
 
 
-def test_last_starter_gets_080_and_backups_share_rest():
+def test_after_a_change_the_new_starter_and_the_season_starter_split_by_measured_rates():
     c = candidates("Mississippi State", 344, 2026, datetime(2026, 10, 21, tzinfo=UTC), PASSERS, GAMES)
     base = dict(zip(c["player_id"], c["base"]))
-    assert base["P"] == pytest.approx(0.80)
-    assert base["T"] == pytest.approx(0.20 * 75 / 85)
-    assert base["C"] == pytest.approx(0.20 * 10 / 85)
-    assert sum(base.values()) == pytest.approx(1.0)
+    assert base["P"] == pytest.approx(HOLD_RATE[1])
+    assert base["T"] == pytest.approx(RETURN_RATE[1])
+    assert base["C"] == pytest.approx(1 - HOLD_RATE[1] - RETURN_RATE[1])
+    assert c.set_index("player_id").loc["T", "missed"] == 1
+
+
+def test_an_established_starter_keeps_more_the_longer_his_streak():
+    passers = pd.DataFrame(plays(1, "T", 40) + plays(1, "C", 10, start=100) + plays(2, "T", 35) + plays(3, "T", 30))
+    c = candidates("Mississippi State", 344, 2026, datetime(2026, 10, 21, tzinfo=UTC), passers, GAMES)
+    base = dict(zip(c["player_id"], c["base"]))
+    assert base["T"] == pytest.approx(KEEP_RATE[3])
+    assert base["C"] == pytest.approx(1 - KEEP_RATE[3])
+    assert c.set_index("player_id").loc["T", "streak"] == 3
+    assert KEEP_RATE[1] < KEEP_RATE[3] < KEEP_RATE[8]
 
 
 def test_games_inside_24h_are_ignored():
@@ -84,4 +95,20 @@ def test_non_qb_passers_and_unlinked_junk_are_left_out():
     c = candidates("Mississippi State", 344, 2026, datetime(2026, 10, 21, tzinfo=UTC), passers, GAMES,
                    eligible=eligible)
     assert set(c["passer_key"]) == {"T", "new"}
-    assert c.loc[c["passer_key"] == "T", "base"].item() == pytest.approx(0.80)
+    assert c.loc[c["passer_key"] == "T", "base"].item() == pytest.approx(KEEP_RATE[3])
+
+
+def test_changed_flags_a_new_starter_in_the_last_game_or_a_season_starter_out_of_the_job():
+    at = datetime(2026, 10, 21, tzinfo=UTC)
+    assert candidates("Mississippi State", 344, 2026, at, PASSERS, GAMES)["changed"].all()
+    steady = pd.DataFrame(plays(1, "T", 40) + plays(2, "T", 35) + plays(3, "T", 30))
+    assert not candidates("Mississippi State", 344, 2026, at, steady, GAMES)["changed"].any()
+    swap = pd.DataFrame(plays(2, "T", 35) + plays(3, "P", 30))
+    assert candidates("Mississippi State", 344, 2026, at, swap, GAMES)["changed"].all()
+
+
+def test_every_former_starter_carries_his_starts_and_games_since_his_last_start():
+    swap = pd.DataFrame(plays(1, "T", 40) + plays(2, "P", 35) + plays(3, "P", 30))
+    c = candidates("Mississippi State", 344, 2026, datetime(2026, 10, 21, tzinfo=UTC), swap, GAMES).set_index("player_id")
+    assert (c.loc["T", "starts"], c.loc["T", "missed"]) == (1, 2)
+    assert (c.loc["P", "starts"], c.loc["P", "missed"]) == (2, 0)

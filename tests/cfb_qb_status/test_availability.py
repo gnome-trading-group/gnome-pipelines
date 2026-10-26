@@ -143,3 +143,12 @@ def test_arrivals_count_every_row_including_non_qbs():
     arrived = report_arrivals("SEC", payload(row(Player="Wide Out", Number="#9", **{"Update 2": "", "Game Day": ""})),
                               TeamIndex(GAMES), GAMES)
     assert arrived == {(7, "Initial"), (7, "Update 1")}
+
+
+def test_rows_before_since_are_skipped():
+    week8 = row(Week="Sat, 24 Oct 2026 00:00:00 GMT", WeekNum=8, Opponent="vs. Oklahoma", OpponentDisplay="vs. Oklahoma")
+    ev = report_evidence("SEC", payload(row(), week8), SEEN, TeamIndex(GAMES), {2026: PlayerIndex(ROSTERS, PASSERS, 2026)},
+                         GAMES, since=date(2026, 10, 20))
+    assert {e.game_id for e in ev} == {8}
+    arrived = report_arrivals("SEC", payload(row(), week8), TeamIndex(GAMES), GAMES, since=date(2026, 10, 20))
+    assert {g for g, _ in arrived} == {8}

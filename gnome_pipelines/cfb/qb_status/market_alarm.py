@@ -1,7 +1,9 @@
 """Market alarm: Kalshi moved on a game and our QB status didn't, which usually means news we haven't read.
 
 An alarm opens watches on both teams and is logged; if no status change follows within MISSED_AFTER it becomes a
-missed-news candidate in the health table.
+missed-news candidate in the health table. Only moves within HORIZON of kickoff count: earlier in the week a line moves
+as the market finds its price (460 alarms on Sunday Oct 25 2026, most for games six days out), and each alarm's X
+watches and lookbacks spent most of October's X budget in four days.
 """
 from __future__ import annotations
 
@@ -17,6 +19,7 @@ from gnome_pipelines.cfb.qb_status.crosswalk import TeamIndex
 EVENTS = "https://api.elections.kalshi.com/trade-api/v2/events"
 SERIES = "KXNCAAFGAME"
 MOVE, WINDOW, QUIET, MISSED_AFTER = 0.15, timedelta(minutes=60), timedelta(hours=6), timedelta(minutes=30)
+HORIZON = timedelta(hours=48)
 MONTHS = {m: i for i, m in enumerate(("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV",
                                       "DEC"), start=1)}
 
@@ -79,7 +82,8 @@ class Alarm:
 
 def alarms(history: pd.DataFrame, last_change: dict[int, datetime], now: datetime,
            kickoffs: dict[int, datetime] | None = None) -> list[Alarm]:
-    """Pre-kickoff moves only: once a game starts, its price moves on every play, which is not QB news."""
+    """Moves within HORIZON before kickoff only: once a game starts, its price moves on every play, which is not QB
+    news, and earlier in the week the line is still finding its level."""
     if history.empty:
         return []
     h = history.assign(at=pd.to_datetime(history["at"], utc=True))
@@ -87,7 +91,7 @@ def alarms(history: pd.DataFrame, last_change: dict[int, datetime], now: datetim
     out = []
     for game_id, g in h.groupby("game_id"):
         kick = (kickoffs or {}).get(int(game_id))
-        if kick is not None and pd.Timestamp(now) >= pd.Timestamp(kick):
+        if kick is not None and not pd.Timestamp(kick) - HORIZON <= pd.Timestamp(now) < pd.Timestamp(kick):
             continue
         g = g.sort_values("at")
         changed = last_change.get(int(game_id))

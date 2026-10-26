@@ -118,6 +118,7 @@ class PlayerIndex:
         self._key_of = {(t, pid): k for (t, k), pid in self._by_key.items()}
         self._position = {(int(t), str(pid)): pos for t, pid, pos in keyed[["team_id", "player_id", "position"]]
                           .itertuples(index=False)}
+        self._qbs: dict[int, pd.DataFrame] = {}
 
     @staticmethod
     def _keys(rows: pd.DataFrame) -> dict[tuple[int, str], str]:
@@ -171,6 +172,12 @@ class PlayerIndex:
         return Match(top[0], best)
 
     def qbs(self, team_id: int) -> pd.DataFrame:
+        """The team's QBs (cached: the index doesn't change once built, and report parsing asks once per row)."""
+        if int(team_id) not in self._qbs:
+            self._qbs[int(team_id)] = self._find_qbs(team_id)
+        return self._qbs[int(team_id)].copy()
+
+    def _find_qbs(self, team_id: int) -> pd.DataFrame:
         team = self.rosters[self.rosters["team_id"] == team_id]
         key = team["player_id"].astype(str).map(lambda pid: self._key_of.get((int(team_id), pid)))
         n = key.map(lambda k: self.dropbacks(team_id, k))

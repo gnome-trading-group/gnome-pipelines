@@ -63,3 +63,38 @@ def test_game_day_official_never_opens_a_watch():
 def test_market_alarm_and_pbp_open():
     assert opens_watch(ev("market_alarm", source="market_alarm", player=None), set())
     assert opens_watch(ev("left_game_injured", source="pbp_flag"), set())
+
+
+def test_a_qb_change_or_no_clear_favourite_is_unsettled():
+    from gnome_pipelines.cfb.qb_status.watches import UNSETTLED_TOP, is_unsettled
+    assert is_unsettled(0.95, qb_change=True)
+    assert is_unsettled(UNSETTLED_TOP - 0.01, qb_change=False)
+    assert not is_unsettled(UNSETTLED_TOP, qb_change=False)
+
+
+def test_an_unsettled_starter_opens_a_watch_inside_the_window():
+    from gnome_pipelines.cfb.qb_status.watches import unsettled_watches
+    now = KICK[8] - timedelta(days=2)
+    w = unsettled_watches(EMPTY, {(8, 344)}, KICK, now)
+    assert watched_teams(w, now) == {344}
+    assert w["reason"].tolist() == ["unsettled"]
+    assert list(w.columns) == WATCHES.schema.names
+
+
+def test_a_far_game_opens_nothing():
+    from gnome_pipelines.cfb.qb_status.watches import unsettled_watches
+    assert unsettled_watches(EMPTY, set(), KICK, KICK[8] - timedelta(days=2)).empty
+    assert unsettled_watches(EMPTY, {(8, 344)}, KICK, KICK[8] - timedelta(days=5)).empty
+
+
+def test_an_open_watch_is_not_duplicated():
+    from gnome_pipelines.cfb.qb_status.watches import unsettled_watches
+    now = KICK[8] - timedelta(days=2)
+    w = unsettled_watches(EMPTY, {(8, 344)}, KICK, now)
+    assert len(unsettled_watches(w, {(8, 344)}, KICK, now + timedelta(hours=1))) == 1
+
+
+def test_unsettled_sits_between_a_new_starter_and_an_established_one():
+    from gnome_pipelines.cfb.qb_status.candidates import HOLD_RATE, KEEP_RATE
+    from gnome_pipelines.cfb.qb_status.watches import UNSETTLED_TOP
+    assert max(HOLD_RATE.values()) < UNSETTLED_TOP < min(KEEP_RATE.values())

@@ -83,9 +83,10 @@ def _could_be_qb(players: PlayerIndex, team_id: int, name: str) -> bool:
 
 
 def _row_evidence(conference: str, row: dict, slots: list[str], seen_at: datetime, teams: TeamIndex,
-                  players: dict[int, PlayerIndex], games: pd.DataFrame, backfilled: bool) -> list[Evidence]:
+                  players: dict[int, PlayerIndex], games: pd.DataFrame, backfilled: bool,
+                  since: date | None = None) -> list[Evidence]:
     wd = _week_date(str(row.get("Week") or ""))
-    if wd is None:
+    if wd is None or (since is not None and wd < since):
         return []
     season = _season(wd)
     team_name = str(row.get("TeamDisplay") or row.get("Team") or "")
@@ -131,27 +132,30 @@ def _row_evidence(conference: str, row: dict, slots: list[str], seen_at: datetim
 
 def report_evidence(conference: str, payload: dict, seen_at: datetime, teams: TeamIndex,
                     players: dict[int, PlayerIndex], games: pd.DataFrame, *, backfilled: bool = False,
-                    errors: list[str] | None = None) -> list[Evidence]:
-    """Evidence for every QB status cell. A malformed row is skipped (and noted in `errors`), never fatal."""
+                    errors: list[str] | None = None, since: date | None = None) -> list[Evidence]:
+    """Evidence for every QB status cell. A malformed row is skipped (and noted in `errors`), never fatal. Rows for
+    weeks before `since` are skipped unread: the feed returns the whole season on every call, and matching every row
+    took about 3 minutes a poll on the service's quarter CPU."""
     slots = payload.get("report_days") or []
     out: list[Evidence] = []
     for row in payload.get("data") or []:
         try:
-            out += _row_evidence(conference, row, slots, seen_at, teams, players, games, backfilled)
+            out += _row_evidence(conference, row, slots, seen_at, teams, players, games, backfilled, since)
         except (AttributeError, TypeError, ValueError, KeyError) as e:
             if errors is not None:
                 errors.append(f"{conference} row skipped: {type(e).__name__}: {e}"[:200])
     return out
 
 
-def report_arrivals(conference: str, payload: dict, teams: TeamIndex, games: pd.DataFrame) -> set[tuple[int, str]]:
+def report_arrivals(conference: str, payload: dict, teams: TeamIndex, games: pd.DataFrame,
+                    since: date | None = None) -> set[tuple[int, str]]:
     """(game_id, slot) for every filled status cell, any position: when a report has visibly been published."""
     slots = payload.get("report_days") or []
     arrived: set[tuple[int, str]] = set()
     for row in payload.get("data") or []:
         try:
             wd = _week_date(str(row.get("Week") or ""))
-            if wd is None:
+            if wd is None or (since is not None and wd < since):
                 continue
             team_id = _team(teams, conference, str(row.get("TeamDisplay") or row.get("Team") or ""), _season(wd))
             if team_id is None:

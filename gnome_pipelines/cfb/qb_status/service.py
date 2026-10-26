@@ -23,12 +23,13 @@ import requests
 from gnomepy.data import DatasetStore
 from pyiceberg.expressions import EqualTo
 
-from gnome_pipelines.cfb.qb_status.autoapply import credibility_for, decide
-from gnome_pipelines.cfb.qb_status.availability import CONFERENCES, fetch_conference, report_arrivals, report_evidence
+from gnome_pipelines.cfb.qb_status.autoapply import credibility_for, decide, redecide
+from gnome_pipelines.cfb.qb_status.availability import (CONFERENCES, PAST_GRACE, fetch_conference, report_arrivals,
+                                                        report_evidence)
 from gnome_pipelines.cfb.qb_status.backfill import capture_evidence
 from gnome_pipelines.cfb.qb_status.candidates import candidates, game_starters, next_game, with_roster_ids
 from gnome_pipelines.cfb.qb_status.crosswalk import MATCH_OK, PlayerIndex, TeamIndex, _surname, players_frame
-from gnome_pipelines.cfb.qb_status.engine import team_status
+from gnome_pipelines.cfb.qb_status.engine import UNKNOWN, team_status
 from gnome_pipelines.cfb.qb_status.evidence import Evidence, evidence_id
 from gnome_pipelines.cfb.qb_status.extract import (ClaudeExtractor, ExtractionUnavailable, Extractor, NotConfigured,
                                                    RuleExtractor)
@@ -41,9 +42,10 @@ from gnome_pipelines.cfb.qb_status.state_sync import StateMirror
 from gnome_pipelines.cfb.qb_status.schedule import (WINDOW_AFTER, expected_releases, report_poll_interval,
                                                      schedule_rows)
 from gnome_pipelines.cfb.qb_status.store import StatusStore, open_store
-from gnome_pipelines.cfb.qb_status.watches import update_watches, watched_teams
-from gnome_pipelines.cfb.qb_status.x_scan import (LOOKBACK_POSTS, Query, Registry, XBudget, lookback_query,
-                                                   posts_to_evidence, registry_frame, sweep_queries, watch_queries)
+from gnome_pipelines.cfb.qb_status.watches import is_unsettled, unsettled_watches, update_watches, watched_teams
+from gnome_pipelines.cfb.qb_status.x_scan import (DAILY_CAP_USD, LOOKBACK_POSTS, MONTHLY_USD, Query, Registry, XBudget,
+                                                   lookback_query, post_time, posts_to_evidence, registry_frame,
+                                                   sweep_queries, watch_queries)
 from gnome_pipelines.cfb.qb_status.x_source import ReadBudget, XSource
 
 CONF_CODES = {"SEC": "SEC", "Big Ten": "B10", "Big 12": "B12", "ACC": "ACC", "American Athletic": "American",
@@ -219,6 +221,7 @@ class Context:
         self.pending_alarms: list[Alarm] = []
         self.alarmed_until: dict[int, datetime] = {}
         self.last_change: dict[int, datetime] = {}
+        self.unsettled: dict[int, bool] = {}
         self.accuracy_done: set[int] = set()
         self.news_cursor, self.watch_cursor = 0, 0
         self.refresh()
@@ -276,7 +279,9 @@ class Context:
             found = read(self.rules)
         if not found:
             return found
-        return decide(found, self.status.evidence(), credibility_for(self.x_registry), now)
+        return decide(found, self.status.evidence(), credibility_for(self.x_registry), now,
+                      incumbent=lambda tid: self.last_starter(tid, now),
+                      unsettled=lambda tid: self.unsettled.get(tid, False))
 
     # --- X ---------------------------------------------------------------------------------------------------------
     def _refresh_x(self, now: datetime) -> None:
@@ -304,6 +309,8 @@ class Context:
                                                    f"${self.x_budget.spent_usd():.2f} spent this month")])
             return []
         since = self.x_budget.since(q.key) if resume else None
+        if since is not None and post_time(since) < now - first_back:
+            since = None
         posts = self.x.poll(q.text, since_id=since, kind=q.kind, start_time=None if since else now - first_back,
                             max_results=max_results, sort_order=sort_order)
         if self.x_budget.charge(len(posts), now):
@@ -380,6 +387,10 @@ class Context:
         past = kick[kick < pd.Timestamp(now)]
         return past.max().to_pydatetime() if len(past) else None
 
+    def last_starter(self, team_id: int, now: datetime) -> str | None:
+        c = self.team_candidates(team_id, now)
+        return str(c.loc[c["last_starter"], "player_id"].iloc[0]) if len(c) and c["last_starter"].any() else None
+
     def starter_surname(self, team_id: int, now: datetime) -> str | None:
         c = self.team_candidates(team_id, now)
         if c.empty:
@@ -391,26 +402,41 @@ class Context:
     def watched_count(self, now: datetime) -> int:
         return len(watched_teams(self.watches, now))
 
+    def _team_status(self, tid: int, game: int, cands: pd.DataFrame, evidence: pd.DataFrame,
+                     now: datetime) -> pd.DataFrame:
+        qb_ids = set(self.players[self.season].qbs(tid)["player_id"]) | set(cands["player_id"].astype(str))
+        return team_status(game, tid, cands, evidence, now, since=self.previous_kickoff(tid, now), qb_ids=qb_ids)
+
     def recompute(self, teams: set[int], new: list[Evidence], now: datetime) -> None:
         evidence = self.status.evidence()
-        frames = []
+        frames, open_question = [], set()
         for tid in teams:
             name = self.team_names.get(tid)
             game = next_game(tid, now, self.games) if name else None
             if game is None:
                 continue
             cands = self.team_candidates(tid, now)
-            qb_ids = set(self.players[self.season].qbs(tid)["player_id"]) | set(cands["player_id"].astype(str))
-            status = team_status(game, tid, cands, evidence, now, since=self.previous_kickoff(tid, now),
-                                 qb_ids=qb_ids)
-            if not status.empty:
-                frames.append(status)
+            status = self._team_status(tid, game, cands, evidence, now)
+            if status.empty:
+                continue
+            named = status[status["player_id"] != UNKNOWN]
+            qb_change = bool(cands["changed"].any()) if "changed" in cands.columns else False
+            self.unsettled[tid] = is_unsettled(float(named["p_start"].max()) if len(named) else 0.0, qb_change)
+            if self.unsettled[tid]:
+                open_question.add((game, tid))
+                late = redecide(evidence, credibility_for(self.x_registry), now, team_id=tid, game_id=game,
+                                unsettled=True)
+                if self.status.add_evidence_new(late):
+                    evidence = self.status.evidence()
+                    status = self._team_status(tid, game, cands, evidence, now)
+            frames.append(status)
         pairs = self.status.put_snapshots_changed(pd.concat(frames, ignore_index=True), now) if frames else set()
         for game, _ in pairs:
             self.last_change[game] = now
         changed = {tid for _, tid in pairs}
         self.status.put_health(news_lag_rows(new, changed))
         self.watches = update_watches(self.watches, new, self.kickoffs, now)
+        self.watches = unsettled_watches(self.watches, open_question, self.kickoffs, now)
         self.status.put_watches(self.watches)
 
     # --- pollers ---------------------------------------------------------------------------------------------------
@@ -431,13 +457,15 @@ class Context:
 
     def reports_run(self, now: datetime) -> list[Evidence]:
         out, health, new_obs = [], [], {}
+        since = now.date() - PAST_GRACE
         for conf in CONFERENCES:
             try:
                 payload = fetch_conference(self.session, conf)
                 errors: list[str] = []
-                out += report_evidence(conf, payload, now, self.teams, self.players, self.games, errors=errors)
+                out += report_evidence(conf, payload, now, self.teams, self.players, self.games, errors=errors,
+                                       since=since)
                 health += [health_row("source_error", now, e) for e in errors[:5]]
-                for game_id, slot in report_arrivals(conf, payload, self.teams, self.games):
+                for game_id, slot in report_arrivals(conf, payload, self.teams, self.games, since=since):
                     if (conf, game_id, slot) not in self.observed:
                         self.observed[(conf, game_id, slot)] = pd.Timestamp(now)
                         new_obs[(conf, game_id, slot)] = now
@@ -620,7 +648,8 @@ def build_service(ctx: Context, espn: bool = True, market: bool = True, news: bo
 
 def service_context(research: DatasetStore, status: StatusStore, season: int, use_x: bool = True,
                     use_claude: bool = True, say: Callable[[str], None] = print,
-                    cache_dir: Path | None = None) -> Context:
+                    cache_dir: Path | None = None, x_state: Path = X_STATE, x_monthly_usd: float = MONTHLY_USD,
+                    x_daily_usd: float = DAILY_CAP_USD) -> Context:
     """The Context with X and Claude switched on where their keys can be found (environment, else Secrets Manager)."""
     x = XSource(budget=ReadBudget(10**9)) if use_x else None   # XBudget is the real governor
     if x is not None and not x.enabled:
@@ -631,8 +660,9 @@ def service_context(research: DatasetStore, status: StatusStore, season: int, us
             extractor = ClaudeExtractor()
         except NotConfigured as e:
             say(f"Claude is off ({e}); posts and headlines are read by rules and wait for review")
-    return Context(research, status, season, cache_dir=cache_dir, x=x if x is not None and x.enabled else None,
-                   extractor=extractor)
+    x = x if x is not None and x.enabled else None
+    budget = XBudget(x_state, monthly_usd=x_monthly_usd, daily_cap_usd=x_daily_usd) if x is not None else None
+    return Context(research, status, season, cache_dir=cache_dir, x=x, x_budget=budget, extractor=extractor)
 
 
 def _print_team(ctx: Context, team: str, now: datetime) -> None:
