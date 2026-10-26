@@ -199,3 +199,23 @@ def test_season_starter_with_no_injury_history_is_not_promoted():
 
 def test_rule_version_is_v3():
     assert RULE_VERSION == "v3"
+
+
+def tied():
+    return pd.DataFrame([
+        {"player_id": "F", "passer_key": "F", "base": 0.88, "last_starter": True, "season_starter": True,
+         "missed": 0, "starts": 3},
+        {"player_id": "H", "passer_key": "H", "base": 0.12, "last_starter": False, "season_starter": False,
+         "missed": 3, "starts": 3},
+    ])
+
+
+def test_a_former_starter_reported_available_for_this_game_comes_back_at_the_measured_share():
+    p, df = status([ev("H", "available", T0, source="news")], cands=tied())
+    assert p["H"] == pytest.approx(RETURN_HEALTHY[3])
+    assert "back from injury" in df.set_index("player_id").loc["H", "reason"]
+
+
+def test_a_former_starter_with_no_news_stays_at_his_base():
+    p, _ = status([], cands=tied())
+    assert p["H"] == pytest.approx(0.12)

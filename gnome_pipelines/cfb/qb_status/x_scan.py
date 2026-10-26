@@ -34,6 +34,7 @@ from gnome_pipelines.datasets.qb_status import SOURCES
 PRICE_PER_POST = 0.005
 MONTHLY_USD = 25.0
 DAILY_ALERT_USD = 1.5
+DAILY_CAP_USD = 3.0
 LOOKBACK_POSTS = 50
 CREDIBILITY = {"normal": 1.0, "low": 0.5}
 UNLISTED_CREDIBILITY = 0.25            # accounts found by gap and lookback searches of anyone
@@ -197,12 +198,15 @@ def post_time(post_id: str) -> datetime:
 
 class XBudget:
     """Monthly X spend from the posts we were billed for, persisted with each query's since_id. Sweeps stop at
-    SWEEP_SHARE of the cap; watches and lookbacks may use the rest."""
+    SWEEP_SHARE of the cap; watches and lookbacks may use the rest. Everything stops for the day at daily_cap_usd, so
+    one busy day can't spend the month."""
 
-    def __init__(self, path: Path, monthly_usd: float = MONTHLY_USD, daily_alert_usd: float = DAILY_ALERT_USD) -> None:
+    def __init__(self, path: Path, monthly_usd: float = MONTHLY_USD, daily_alert_usd: float = DAILY_ALERT_USD,
+                 daily_cap_usd: float = DAILY_CAP_USD) -> None:
         self.path = Path(path)
         self.cap = int(round(monthly_usd / PRICE_PER_POST))
         self.daily_alert = int(round(daily_alert_usd / PRICE_PER_POST))
+        self.daily_cap = int(round(daily_cap_usd / PRICE_PER_POST))
         self.state = {"month": "", "posts_month": 0, "day": "", "posts_day": 0, "since": {}}
         if self.path.exists():
             self.state.update(json.loads(self.path.read_text()))
@@ -221,7 +225,7 @@ class XBudget:
     def allow(self, kind: str, now: datetime) -> bool:
         self._roll(now)
         cap = self.cap * (SWEEP_SHARE if kind in ("sweep", "national", "gap") else 1.0)
-        return self.state["posts_month"] < cap
+        return self.state["posts_month"] < cap and self.state["posts_day"] < self.daily_cap
 
     def charge(self, n: int, now: datetime) -> bool:
         """Record n billed posts; True the first time today's spend crosses the daily alert."""

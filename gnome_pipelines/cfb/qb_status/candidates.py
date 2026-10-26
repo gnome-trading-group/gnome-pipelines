@@ -25,7 +25,8 @@ HOLD_RATE = {1: 0.614, 2: 0.745, 3: 0.755}
 # play-by-play parsing artifact (a team name read as the passer).
 MIN_UNLINKED_DROPBACKS = 10
 PBP_DELAY = timedelta(hours=24)
-COLUMNS = ["player_id", "passer_key", "base", "last_starter", "season_starter", "streak", "missed", "changed"]
+COLUMNS = ["player_id", "passer_key", "base", "last_starter", "season_starter", "streak", "missed", "changed",
+           "starts"]
 
 
 def game_starters(passers: pd.DataFrame) -> pd.DataFrame:
@@ -79,7 +80,9 @@ def candidates(team: str, team_id: int, season: int, as_of: datetime, passers: p
     out["last_starter"] = out["player_id"] == str(last)
     out["season_starter"] = out["player_id"] == str(season_starter)
     out["streak"] = streak
-    out["missed"] = [missed if k == str(season_starter) else 0 for k in out["player_id"]]
+    latest = {str(k): i for i, k in enumerate(seq)}
+    out["missed"] = [len(seq) - 1 - latest[k] if k in latest else 0 for k in out["player_id"]]
+    out["starts"] = [sum(1 for s in seq if str(s) == k) for k in out["player_id"]]
     out["changed"] = bool(missed) or (streak == 1 and len(seq) > 1)
     return out[COLUMNS]
 

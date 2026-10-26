@@ -23,8 +23,9 @@ import requests
 from gnomepy.data import DatasetStore
 from pyiceberg.expressions import EqualTo
 
-from gnome_pipelines.cfb.qb_status.autoapply import credibility_for, decide
-from gnome_pipelines.cfb.qb_status.availability import CONFERENCES, fetch_conference, report_arrivals, report_evidence
+from gnome_pipelines.cfb.qb_status.autoapply import credibility_for, decide, redecide
+from gnome_pipelines.cfb.qb_status.availability import (CONFERENCES, PAST_GRACE, fetch_conference, report_arrivals,
+                                                        report_evidence)
 from gnome_pipelines.cfb.qb_status.backfill import capture_evidence
 from gnome_pipelines.cfb.qb_status.candidates import candidates, game_starters, next_game, with_roster_ids
 from gnome_pipelines.cfb.qb_status.crosswalk import MATCH_OK, PlayerIndex, TeamIndex, _surname, players_frame
@@ -401,6 +402,11 @@ class Context:
     def watched_count(self, now: datetime) -> int:
         return len(watched_teams(self.watches, now))
 
+    def _team_status(self, tid: int, game: int, cands: pd.DataFrame, evidence: pd.DataFrame,
+                     now: datetime) -> pd.DataFrame:
+        qb_ids = set(self.players[self.season].qbs(tid)["player_id"]) | set(cands["player_id"].astype(str))
+        return team_status(game, tid, cands, evidence, now, since=self.previous_kickoff(tid, now), qb_ids=qb_ids)
+
     def recompute(self, teams: set[int], new: list[Evidence], now: datetime) -> None:
         evidence = self.status.evidence()
         frames, open_question = [], set()
@@ -410,16 +416,20 @@ class Context:
             if game is None:
                 continue
             cands = self.team_candidates(tid, now)
-            qb_ids = set(self.players[self.season].qbs(tid)["player_id"]) | set(cands["player_id"].astype(str))
-            status = team_status(game, tid, cands, evidence, now, since=self.previous_kickoff(tid, now),
-                                 qb_ids=qb_ids)
-            if not status.empty:
-                frames.append(status)
-                named = status[status["player_id"] != UNKNOWN]
-                qb_change = bool(cands["changed"].any()) if "changed" in cands.columns else False
-                self.unsettled[tid] = is_unsettled(float(named["p_start"].max()) if len(named) else 0.0, qb_change)
-                if self.unsettled[tid]:
-                    open_question.add((game, tid))
+            status = self._team_status(tid, game, cands, evidence, now)
+            if status.empty:
+                continue
+            named = status[status["player_id"] != UNKNOWN]
+            qb_change = bool(cands["changed"].any()) if "changed" in cands.columns else False
+            self.unsettled[tid] = is_unsettled(float(named["p_start"].max()) if len(named) else 0.0, qb_change)
+            if self.unsettled[tid]:
+                open_question.add((game, tid))
+                late = redecide(evidence, credibility_for(self.x_registry), now, team_id=tid, game_id=game,
+                                unsettled=True)
+                if self.status.add_evidence_new(late):
+                    evidence = self.status.evidence()
+                    status = self._team_status(tid, game, cands, evidence, now)
+            frames.append(status)
         pairs = self.status.put_snapshots_changed(pd.concat(frames, ignore_index=True), now) if frames else set()
         for game, _ in pairs:
             self.last_change[game] = now
@@ -447,13 +457,15 @@ class Context:
 
     def reports_run(self, now: datetime) -> list[Evidence]:
         out, health, new_obs = [], [], {}
+        since = now.date() - PAST_GRACE
         for conf in CONFERENCES:
             try:
                 payload = fetch_conference(self.session, conf)
                 errors: list[str] = []
-                out += report_evidence(conf, payload, now, self.teams, self.players, self.games, errors=errors)
+                out += report_evidence(conf, payload, now, self.teams, self.players, self.games, errors=errors,
+                                       since=since)
                 health += [health_row("source_error", now, e) for e in errors[:5]]
-                for game_id, slot in report_arrivals(conf, payload, self.teams, self.games):
+                for game_id, slot in report_arrivals(conf, payload, self.teams, self.games, since=since):
                     if (conf, game_id, slot) not in self.observed:
                         self.observed[(conf, game_id, slot)] = pd.Timestamp(now)
                         new_obs[(conf, game_id, slot)] = now

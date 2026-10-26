@@ -53,3 +53,10 @@ def test_in_game_swings_never_alarm():
     assert alarms(hist((-45, 0.40), (0, 0.60)), {}, T, kickoffs=kick) == []
     later = {8: T + timedelta(hours=3)}
     assert alarms(hist((-45, 0.40), (0, 0.60)), {}, T, kickoffs=later)
+
+
+def test_moves_more_than_two_days_before_kickoff_do_not_alarm():
+    from gnome_pipelines.cfb.qb_status.market_alarm import HORIZON
+    kick = {8: T + HORIZON + timedelta(hours=1)}
+    assert alarms(hist((-45, 0.40), (0, 0.4392)), {}, T, kick) == []
+    assert [x.game_id for x in alarms(hist((-45, 0.40), (0, 0.4392)), {}, T, {8: T + HORIZON - timedelta(hours=1)})] == [8]

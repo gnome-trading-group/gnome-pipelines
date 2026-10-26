@@ -69,5 +69,22 @@ class Evidence:
         return {name: row[name] for name in EVIDENCE.schema.names}
 
 
+def _plain(v):
+    if v is None or (not isinstance(v, (list, dict)) and pd.isna(v)):
+        return None
+    if isinstance(v, pd.Timestamp):
+        return v.to_pydatetime()
+    return v.item() if hasattr(v, "item") else v
+
+
+def evidence_from_row(row: dict) -> Evidence:
+    values = {k: _plain(row.get(k)) for k in EVIDENCE.schema.names}
+    for k in ("game_id", "team_id", "week", "season"):
+        if values[k] is not None:
+            values[k] = int(values[k])
+    values["backfilled"] = bool(values["backfilled"])
+    return Evidence(**values)
+
+
 def evidence_frame(items: list[Evidence]) -> pd.DataFrame:
     return pd.DataFrame([e.to_row() for e in items], columns=EVIDENCE.schema.names)

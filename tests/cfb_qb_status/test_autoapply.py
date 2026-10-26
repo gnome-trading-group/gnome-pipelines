@@ -132,3 +132,16 @@ def test_when_the_starter_is_up_in_the_air_two_outlets_on_any_candidate_apply():
            claim("RotoWire", status="expected_starter", hedge="expected", source_type="news", n=2)]
     out = decide(new, evidence_frame([]), cred, T0, incumbent={501: "9000002"}.get, unsettled=lambda tid: tid == 501)
     assert [(e.review_state, e.reviewer) for e in out] == [("pending", None), ("auto", "auto:unsettled")]
+
+
+def test_pending_role_claims_are_redecided_as_new_rows_when_the_starter_becomes_unsettled():
+    from gnome_pipelines.cfb.qb_status.autoapply import redecide
+    held = [claim("Coloradoan", status="expected_starter", hedge="expected", source_type="news", n=1),
+            claim("Gazette", status="expected_starter", hedge="expected", source_type="news", n=2)]
+    existing = evidence_frame(held)
+    later = T0 + timedelta(hours=3)
+    out = redecide(existing, cred, later, team_id=501, game_id=77, unsettled=True)
+    assert len(out) == 2 and all(e.review_state == "auto" and e.reviewer == "auto:unsettled" for e in out)
+    assert all(e.first_seen_at == later for e in out)
+    assert {e.evidence_id for e in out}.isdisjoint({e.evidence_id for e in held})
+    assert redecide(existing, cred, later, team_id=501, game_id=77, unsettled=False) == []

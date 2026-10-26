@@ -431,3 +431,17 @@ def test_a_team_coming_off_a_qb_change_is_watched_even_with_a_clear_favourite(tm
     ctx.recompute({501}, [], now)
     assert ctx.last_starter(501, now) == "9000002"
     assert watched_teams(ctx.watches, now) == {501}
+
+
+def test_held_back_claims_about_a_former_starter_apply_once_the_team_is_unsettled(tmp_path):
+    status = StatusStore(DatasetStore(CatalogConfig(local_warehouse=tmp_path / "wh")))
+    ctx = Context(ResearchWithChange(fail=False), status, 2026, cache_dir=tmp_path / "cache")
+    now = T0 - timedelta(days=1)
+    held = [news("a", "expected_starter", now - timedelta(hours=5), org="Coloradoan", state="pending"),
+            news("b", "expected_starter", now - timedelta(hours=4), org="Gazette", state="pending")]
+    status.add_evidence(held)
+    ctx.recompute({501}, [], now)
+    snap = status.snapshots()
+    top = snap.sort_values("computed_at").drop_duplicates("player_id", keep="last").sort_values("p_start").iloc[-1]
+    assert top["player_id"] == "9000001" and top["p_start"] >= 0.9
+    assert "auto:unsettled" in set(status.evidence()["reviewer"].dropna())

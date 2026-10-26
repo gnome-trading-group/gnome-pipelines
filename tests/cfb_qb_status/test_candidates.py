@@ -105,3 +105,10 @@ def test_changed_flags_a_new_starter_in_the_last_game_or_a_season_starter_out_of
     assert not candidates("Mississippi State", 344, 2026, at, steady, GAMES)["changed"].any()
     swap = pd.DataFrame(plays(2, "T", 35) + plays(3, "P", 30))
     assert candidates("Mississippi State", 344, 2026, at, swap, GAMES)["changed"].all()
+
+
+def test_every_former_starter_carries_his_starts_and_games_since_his_last_start():
+    swap = pd.DataFrame(plays(1, "T", 40) + plays(2, "P", 35) + plays(3, "P", 30))
+    c = candidates("Mississippi State", 344, 2026, datetime(2026, 10, 21, tzinfo=UTC), swap, GAMES).set_index("player_id")
+    assert (c.loc["T", "starts"], c.loc["T", "missed"]) == (1, 2)
+    assert (c.loc["P", "starts"], c.loc["P", "missed"]) == (2, 0)

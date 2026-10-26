@@ -10,7 +10,8 @@ which the engine ignores:
   count; a rule-based read has no hedge reading, so its "unclear" does.
 - incumbent / unsettled: as agree, but at ROLE_WEIGHT (two outlets) for a claim of who starts, when it names the
   team's last starter (it confirms what the engine leans to, so a wrong one costs little) or when the team's starter
-  is up in the air (beat reporters are then the best source there is). Week 8 of 2026 held back "MacIntyre to start"
+  is up in the air (beat reporters are then the best source there is). A claim held back before its team became
+  unsettled is judged again then (redecide), as a new row first seen at that moment. Week 8 of 2026 held back "MacIntyre to start"
   (On3, 247Sports) and "Sagapolutele expected back at QB" (Mercury News and three posts); both were right.
 
 The reviewer column names the rule ("auto:credible"), so the review page doubles as an audit log.
@@ -22,7 +23,7 @@ from typing import Callable
 
 import pandas as pd
 
-from gnome_pipelines.cfb.qb_status.evidence import Evidence
+from gnome_pipelines.cfb.qb_status.evidence import Evidence, evidence_from_row, evidence_id
 
 SINGLE_CONFIDENCE = 0.8
 SINGLE_CREDIBILITY = 1.0
@@ -99,3 +100,26 @@ def decide(new: list[Evidence], existing: pd.DataFrame, credibility: Callable[[s
         if rule is not None:
             e.review_state, e.reviewer, e.reviewed_at = "auto", f"auto:{rule}", now
     return new
+
+
+def redecide(existing: pd.DataFrame, credibility: Callable[[str, str], float], now: datetime, *, team_id: int,
+             game_id: int, unsettled: bool) -> list[Evidence]:
+    """The team-game's pending claims of who starts from the last AGREE_WINDOW, judged again because its starter is
+    now up in the air. Each that passes comes back as a new auto row first seen now (the original stays pending), so
+    the record shows when it began to count."""
+    if not unsettled or existing.empty:
+        return []
+    seen = pd.to_datetime(existing["first_seen_at"], utc=True)
+    held = existing[existing["source_type"].isin(CLAIM_SOURCES) & (existing["review_state"] == "pending")
+                    & (existing["status"] == "expected_starter") & (existing["team_id"] == team_id)
+                    & (existing["game_id"] == game_id) & existing["player_id"].notna()
+                    & (seen >= pd.Timestamp(now) - AGREE_WINDOW)]
+    out = []
+    for row in held.to_dict("records"):
+        e = evidence_from_row(row)
+        if not _counts(e.hedge, e.extractor) or _agreeing_weight(existing, [], e, credibility, now) < ROLE_WEIGHT:
+            continue
+        e.evidence_id = evidence_id("redecided", e.evidence_id)
+        e.first_seen_at, e.review_state, e.reviewer, e.reviewed_at = now, "auto", "auto:unsettled", now
+        out.append(e)
+    return out
