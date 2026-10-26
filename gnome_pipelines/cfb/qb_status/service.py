@@ -28,7 +28,7 @@ from gnome_pipelines.cfb.qb_status.availability import CONFERENCES, fetch_confer
 from gnome_pipelines.cfb.qb_status.backfill import capture_evidence
 from gnome_pipelines.cfb.qb_status.candidates import candidates, game_starters, next_game, with_roster_ids
 from gnome_pipelines.cfb.qb_status.crosswalk import MATCH_OK, PlayerIndex, TeamIndex, _surname, players_frame
-from gnome_pipelines.cfb.qb_status.engine import team_status
+from gnome_pipelines.cfb.qb_status.engine import UNKNOWN, team_status
 from gnome_pipelines.cfb.qb_status.evidence import Evidence, evidence_id
 from gnome_pipelines.cfb.qb_status.extract import (ClaudeExtractor, ExtractionUnavailable, Extractor, NotConfigured,
                                                    RuleExtractor)
@@ -41,9 +41,10 @@ from gnome_pipelines.cfb.qb_status.state_sync import StateMirror
 from gnome_pipelines.cfb.qb_status.schedule import (WINDOW_AFTER, expected_releases, report_poll_interval,
                                                      schedule_rows)
 from gnome_pipelines.cfb.qb_status.store import StatusStore, open_store
-from gnome_pipelines.cfb.qb_status.watches import update_watches, watched_teams
+from gnome_pipelines.cfb.qb_status.watches import is_unsettled, unsettled_watches, update_watches, watched_teams
 from gnome_pipelines.cfb.qb_status.x_scan import (LOOKBACK_POSTS, Query, Registry, XBudget, lookback_query,
-                                                   posts_to_evidence, registry_frame, sweep_queries, watch_queries)
+                                                   post_time, posts_to_evidence, registry_frame, sweep_queries,
+                                                   watch_queries)
 from gnome_pipelines.cfb.qb_status.x_source import ReadBudget, XSource
 
 CONF_CODES = {"SEC": "SEC", "Big Ten": "B10", "Big 12": "B12", "ACC": "ACC", "American Athletic": "American",
@@ -219,6 +220,7 @@ class Context:
         self.pending_alarms: list[Alarm] = []
         self.alarmed_until: dict[int, datetime] = {}
         self.last_change: dict[int, datetime] = {}
+        self.unsettled: dict[int, bool] = {}
         self.accuracy_done: set[int] = set()
         self.news_cursor, self.watch_cursor = 0, 0
         self.refresh()
@@ -276,7 +278,9 @@ class Context:
             found = read(self.rules)
         if not found:
             return found
-        return decide(found, self.status.evidence(), credibility_for(self.x_registry), now)
+        return decide(found, self.status.evidence(), credibility_for(self.x_registry), now,
+                      incumbent=lambda tid: self.last_starter(tid, now),
+                      unsettled=lambda tid: self.unsettled.get(tid, False))
 
     # --- X ---------------------------------------------------------------------------------------------------------
     def _refresh_x(self, now: datetime) -> None:
@@ -304,6 +308,8 @@ class Context:
                                                    f"${self.x_budget.spent_usd():.2f} spent this month")])
             return []
         since = self.x_budget.since(q.key) if resume else None
+        if since is not None and post_time(since) < now - first_back:
+            since = None
         posts = self.x.poll(q.text, since_id=since, kind=q.kind, start_time=None if since else now - first_back,
                             max_results=max_results, sort_order=sort_order)
         if self.x_budget.charge(len(posts), now):
@@ -380,6 +386,10 @@ class Context:
         past = kick[kick < pd.Timestamp(now)]
         return past.max().to_pydatetime() if len(past) else None
 
+    def last_starter(self, team_id: int, now: datetime) -> str | None:
+        c = self.team_candidates(team_id, now)
+        return str(c.loc[c["last_starter"], "player_id"].iloc[0]) if len(c) and c["last_starter"].any() else None
+
     def starter_surname(self, team_id: int, now: datetime) -> str | None:
         c = self.team_candidates(team_id, now)
         if c.empty:
@@ -393,7 +403,7 @@ class Context:
 
     def recompute(self, teams: set[int], new: list[Evidence], now: datetime) -> None:
         evidence = self.status.evidence()
-        frames = []
+        frames, open_question = [], set()
         for tid in teams:
             name = self.team_names.get(tid)
             game = next_game(tid, now, self.games) if name else None
@@ -405,12 +415,18 @@ class Context:
                                  qb_ids=qb_ids)
             if not status.empty:
                 frames.append(status)
+                named = status[status["player_id"] != UNKNOWN]
+                qb_change = bool(cands["changed"].any()) if "changed" in cands.columns else False
+                self.unsettled[tid] = is_unsettled(float(named["p_start"].max()) if len(named) else 0.0, qb_change)
+                if self.unsettled[tid]:
+                    open_question.add((game, tid))
         pairs = self.status.put_snapshots_changed(pd.concat(frames, ignore_index=True), now) if frames else set()
         for game, _ in pairs:
             self.last_change[game] = now
         changed = {tid for _, tid in pairs}
         self.status.put_health(news_lag_rows(new, changed))
         self.watches = update_watches(self.watches, new, self.kickoffs, now)
+        self.watches = unsettled_watches(self.watches, open_question, self.kickoffs, now)
         self.status.put_watches(self.watches)
 
     # --- pollers ---------------------------------------------------------------------------------------------------

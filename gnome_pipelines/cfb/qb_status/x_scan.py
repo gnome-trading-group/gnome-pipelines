@@ -20,7 +20,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -43,7 +43,8 @@ STATUS = ["injury", "injured", "hurt", "questionable", "doubtful", "ruled out", 
           "status"]
 STRONG = ["ruled out", "out for the season", "will not play", "won't play", "won't start", "will not start",
           "expected to start", "will start", "left the game", "carted off", "game-time decision", "season-ending"]
-WATCH_EXTRA = ["did not practice", "limited", "practiced", "day-to-day", "available", "return"]
+WATCH_EXTRA = ["did not practice", "limited", "practiced", "day-to-day", "available", "return", "to start", "QB1",
+               "named the starter", "gets the start", "get the start", "the nod"]
 TAIL = "-is:retweet"
 
 
@@ -184,6 +185,14 @@ def watch_queries(registry: Registry, team: str, qbs: list[tuple[str, str]]) -> 
 def lookback_query(team: str, qbs: list[tuple[str, str]]) -> Query:
     status = f"{_or(_quoted(STATUS))} {TAIL} lang:en"
     return Query(f"lookback:{team}", f"{_or(_full(qbs))} {status}", "lookback", (team,))
+
+
+X_EPOCH_MS = 1288834974657
+
+
+def post_time(post_id: str) -> datetime:
+    """When a post was created, from its id (X ids carry milliseconds since X_EPOCH_MS above bit 22)."""
+    return datetime.fromtimestamp(((int(post_id) >> 22) + X_EPOCH_MS) / 1000, tz=timezone.utc)
 
 
 class XBudget:

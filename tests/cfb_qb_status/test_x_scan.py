@@ -204,3 +204,10 @@ def test_posts_are_read_with_the_team_name_and_labelled_with_the_reader():
 def test_unlisted_accounts_get_low_credibility(registry):
     assert registry.credibility("TestvilleBeat") == 1.0 and registry.credibility("TestvilleSite") == 0.5
     assert registry.credibility("SomeoneElse") == 0.25
+
+
+def test_watch_asks_beat_writers_who_will_start(registry):
+    qs = watch_queries(registry, "Testville State", QBS["Testville State"])
+    text = " ".join(q.text for q in qs)
+    assert '"to start"' in text and ' QB1 ' in text and '"named the starter"' in text
+    assert all(len(q.text) <= QUERY_LIMIT for q in qs)

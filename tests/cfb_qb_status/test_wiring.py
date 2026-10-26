@@ -184,7 +184,7 @@ def run_sweep(ctx, now):
 
 def test_x_sweep_turns_a_reporters_post_into_evidence_and_resumes_from_it(tmp_path):
     now = T0 - timedelta(days=1)
-    post = {"id": "500", "handle": "TestvilleBeat", "text": "Stone will not play Saturday.",
+    post = {"id": "2113707024184246272", "handle": "TestvilleBeat", "text": "Stone will not play Saturday.",
             "created_at": "2026-10-23T19:00:00Z"}
     ctx, fake, _ = x_context(tmp_path, [post])
     ev = run_sweep(ctx, now)
@@ -193,7 +193,7 @@ def test_x_sweep_turns_a_reporters_post_into_evidence_and_resumes_from_it(tmp_pa
     team_query = next(q for q in ctx.x_queries if q.kind == "sweep")
     assert "Stone" in team_query.text and "from:TestvilleBeat" in team_query.text
     run_sweep(ctx, now + timedelta(minutes=3))
-    assert any(c.get("since_id") == "500" for c in fake.calls)
+    assert any(c.get("since_id") == "2113707024184246272" for c in fake.calls)
 
 
 def test_x_budget_stops_the_sweep_before_any_call(tmp_path):
@@ -349,3 +349,85 @@ def test_a_recompute_writes_every_changed_team_in_one_commit(tmp_path):
     snaps = status.snapshots()
     assert set(snaps["team_id"]) == {501, 502} and commits.count("qb_status_snapshots") == 1
     assert ctx.last_change == {1: now}
+
+
+def news(eid, status, at, org="On3", state="auto", hedge="expected"):
+    return Evidence(evidence_id=eid, source_type="news", source_id=eid, source_org=org, first_seen_at=at,
+                    team="Testville State", status=status, season=2026, team_id=501, player_id="9000001", game_id=1,
+                    hedge=hedge, extractor="claude-haiku-5-5", extraction_confidence=0.8, review_state=state)
+
+
+def test_recompute_watches_a_team_whose_starter_is_unsettled(tmp_path):
+    from gnome_pipelines.cfb.qb_status.watches import watched_teams
+    status = StatusStore(DatasetStore(CatalogConfig(local_warehouse=tmp_path / "wh")))
+    ctx = Context(ResearchWithPlays(fail=False), status, 2026, cache_dir=tmp_path / "cache")
+    now = T0 - timedelta(days=1)
+    ctx.recompute({501}, [], now)
+    assert watched_teams(ctx.watches, now) == set()
+    status.add_evidence([news("q", "questionable", now)])
+    ctx.recompute({501}, [], now + timedelta(minutes=1))
+    assert watched_teams(ctx.watches, now + timedelta(minutes=1)) == {501}
+    assert ctx.watches["reason"].tolist() == ["unsettled"]
+
+
+def test_two_outlets_on_the_last_starter_apply_through_the_service(tmp_path):
+    status = StatusStore(DatasetStore(CatalogConfig(local_warehouse=tmp_path / "wh")))
+    ctx = Context(ResearchWithPlays(fail=False), status, 2026, cache_dir=tmp_path / "cache")
+    now = T0 - timedelta(days=1)
+    found = [news("a", "expected_starter", now, org="On3", state="pending"),
+             news("b", "expected_starter", now, org="247Sports", state="pending", hedge="per_sources")]
+    out = ctx._read(lambda ex: found, now)
+    assert [e.reviewer for e in out] == [None, "auto:incumbent"]
+
+
+def test_x_poll_ignores_a_cursor_older_than_its_lookback(tmp_path):
+    from gnome_pipelines.cfb.qb_status.x_scan import post_time
+    ctx, fake, _ = x_context(tmp_path)
+    now = T0 - timedelta(days=1)
+    old = str(((int((now - timedelta(days=10)).timestamp() * 1000)) - 1288834974657) << 22)
+    assert abs(post_time(old) - (now - timedelta(days=10))) < timedelta(seconds=1)
+    for q in ctx.x_queries:
+        ctx.x_budget.set_since(q.key, old)
+    run_sweep(ctx, now)
+    assert fake.calls and all("since_id" not in c and "start_time" in c for c in fake.calls)
+
+
+def test_claims_about_any_qb_apply_on_two_outlets_while_the_starter_is_unsettled(tmp_path):
+    status = StatusStore(DatasetStore(CatalogConfig(local_warehouse=tmp_path / "wh")))
+    ctx = Context(ResearchWithPlays(fail=False), status, 2026, cache_dir=tmp_path / "cache")
+    now = T0 - timedelta(days=1)
+    status.add_evidence([news("q", "questionable", now)])
+    ctx.recompute({501}, [], now)
+    found = [news("a", "expected_starter", now, org="On3", state="pending"),
+             news("b", "expected_starter", now, org="247Sports", state="pending")]
+    for e in found:
+        e.player_id = "9000002"
+    assert [e.reviewer for e in ctx._read(lambda ex: found, now)] == [None, "auto:unsettled"]
+
+
+class ResearchWithChange(ResearchWithPlays):
+    """Stone started the earlier game, Rowe the latest one: a QB change."""
+
+    def load(self, name, **kw):
+        if name == "cfb_games":
+            g = super().load(name, **kw)
+            later = {"game_id": 9, "season": 2026, "kickoff": pd.Timestamp("2026-10-20T19:00Z"),
+                     "home_team": "Testville State", "home_id": 501, "away_team": "Example Tech", "away_id": 502,
+                     "home_classification": "fbs", "away_classification": "fbs", "completed": True,
+                     "conference_game": True, "home_conference": "SEC"}
+            return pd.concat([g, pd.DataFrame([later])], ignore_index=True)
+        if name == "cfb_passers":
+            rowe = [{"season": 2026, "game_id": 9, "offense": "Testville State", "passer": "B.Rowe",
+                     "passer_key": "b.rowe", "play_seq": i} for i in range(1, 31)]
+            return pd.concat([super().load(name, **kw), pd.DataFrame(rowe)], ignore_index=True)
+        return super().load(name, **kw)
+
+
+def test_a_team_coming_off_a_qb_change_is_watched_even_with_a_clear_favourite(tmp_path):
+    from gnome_pipelines.cfb.qb_status.watches import watched_teams
+    status = StatusStore(DatasetStore(CatalogConfig(local_warehouse=tmp_path / "wh")))
+    ctx = Context(ResearchWithChange(fail=False), status, 2026, cache_dir=tmp_path / "cache")
+    now = T0 - timedelta(days=1)
+    ctx.recompute({501}, [], now)
+    assert ctx.last_starter(501, now) == "9000002"
+    assert watched_teams(ctx.watches, now) == {501}

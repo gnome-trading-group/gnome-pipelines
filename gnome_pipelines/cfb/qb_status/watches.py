@@ -1,7 +1,8 @@
 """Watches: teams with an open question about their QB, which get fast X and news polling until it is settled.
 
-Opened by a game-night flag, a market alarm, a manual request, or an official Questionable / Doubtful / Out /
-Game-Time Decision on a candidate. New evidence for the team extends a watch. It closes at kickoff, when an official
+Opened by a game-night flag, a market alarm, a manual request, an official Questionable / Doubtful / Out /
+Game-Time Decision on a candidate, or an unsettled starter: no QB at UNSETTLED_TOP or better within UNSETTLED_WINDOW
+of kickoff, so the team's beat writers are searched for who will start. New evidence for the team extends a watch. It closes at kickoff, when an official
 game-day status arrives, or after WATCH_HOURS without new evidence.
 """
 from __future__ import annotations
@@ -16,6 +17,10 @@ from gnome_pipelines.datasets.qb_status import WATCHES
 WATCH_HOURS = 24
 ALWAYS_OPEN = {"pbp_flag": "pbp_flag", "market_alarm": "market_alarm", "manual": "manual"}
 WORRYING = {"questionable", "doubtful", "out", "game_time_decision"}
+# Between the measured chance a new starter keeps the job (HOLD_RATE, at most 0.755) and an established one's
+# (KEEP_RATE, at least 0.845): a team whose last start was a QB change is unsettled until news settles it.
+UNSETTLED_TOP = 0.80
+UNSETTLED_WINDOW = timedelta(days=3)
 
 
 def opens_watch(ev: Evidence, candidate_ids: set[str] | None) -> bool:
@@ -76,3 +81,29 @@ def watched_teams(watches: pd.DataFrame, now: datetime) -> set[int]:
     if watches.empty:
         return set()
     return {int(t) for t in watches.loc[_open(watches, now), "team_id"]}
+
+
+def is_unsettled(top_p: float, qb_change: bool) -> bool:
+    """A team's starter is up in the air after a QB change (until news settles it) or with no clear favourite."""
+    return qb_change or top_p < UNSETTLED_TOP
+
+
+def unsettled_watches(watches: pd.DataFrame, unsettled: set[tuple[int, int]], kickoffs: dict[int, datetime],
+                      now: datetime) -> pd.DataFrame:
+    """Open a watch for each unsettled (game_id, team_id) with kickoff inside UNSETTLED_WINDOW, unless the team is
+    already watched. It runs until kickoff."""
+    w = _typed(watches.copy() if len(watches) else pd.DataFrame(columns=WATCHES.schema.names))
+    open_teams = watched_teams(w, now) if len(w) else set()
+    rows = []
+    for game, team in sorted(unsettled):
+        kick = kickoffs.get(int(game))
+        if (kick is None or int(team) in open_teams
+                or not pd.Timestamp(now) <= pd.Timestamp(kick) <= pd.Timestamp(now) + UNSETTLED_WINDOW):
+            continue
+        rows.append({"watch_id": evidence_id("watch", int(team), "unsettled", int(game), pd.Timestamp(now).isoformat()),
+                     "team_id": int(team), "game_id": int(game), "reason": "unsettled", "opened_at": pd.Timestamp(now),
+                     "expires_at": pd.Timestamp(kick), "closed_at": pd.NaT, "close_reason": None})
+        open_teams.add(int(team))
+    if rows:
+        w = _typed(pd.concat([w, pd.DataFrame(rows)], ignore_index=True) if len(w) else pd.DataFrame(rows))
+    return w[WATCHES.schema.names].reset_index(drop=True)

@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 import pytest
 
-from gnome_pipelines.cfb.qb_status.engine import RULE_VERSION, team_status
+from gnome_pipelines.cfb.qb_status.engine import RETURN_HEALTHY, RULE_VERSION, team_status
 from gnome_pipelines.cfb.qb_status.evidence import Evidence, evidence_frame
 from gnome_pipelines.datasets.qb_status import SNAPSHOTS
 
@@ -160,28 +160,42 @@ def test_a_deep_backup_only_gets_what_the_qbs_ahead_of_him_leave():
 
 def returning():
     return pd.DataFrame([
-        {"player_id": "L", "passer_key": "L", "base": 0.80, "last_starter": True, "season_starter": False},
-        {"player_id": "S", "passer_key": "S", "base": 0.20, "last_starter": False, "season_starter": True},
+        {"player_id": "L", "passer_key": "L", "base": 0.66, "last_starter": True, "season_starter": False, "missed": 0},
+        {"player_id": "S", "passer_key": "S", "base": 0.34, "last_starter": False, "season_starter": True, "missed": 1},
     ])
 
 
-def test_season_starter_back_from_injury_takes_the_job_when_probable():
+def test_season_starter_back_from_injury_gets_the_measured_return_share_when_probable():
+    p, df = status([ev("S", "out", T0 - timedelta(days=7), slot="Initial", game=7),
+                    ev("S", "probable", T0, slot="Initial")], cands=returning())
+    assert p["S"] == pytest.approx(RETURN_HEALTHY[1] * 0.75)
+    assert p["L"] == pytest.approx(RETURN_HEALTHY[1] * 0.25 + (1 - RETURN_HEALTHY[1]))
+    assert "back from injury" in df.set_index("player_id").loc["S", "reason"]
+
+
+def test_injury_on_record_but_no_news_for_this_game_keeps_the_new_starter():
+    p, _ = status([ev("S", "out", T0 - timedelta(days=7), slot="Initial", game=7)], cands=returning())
+    assert (p["L"], p["S"]) == (pytest.approx(0.66), pytest.approx(0.34))
+
+
+def test_a_role_claim_beats_the_returning_starter():
     p, _ = status([ev("S", "out", T0 - timedelta(days=7), slot="Initial", game=7),
-                   ev("S", "probable", T0, slot="Initial")], cands=returning())
-    assert p["S"] == pytest.approx(0.8 * 0.75)
-    assert p["L"] == pytest.approx(0.8 * 0.25 + 0.2)
+                   ev("S", "probable", T0, slot="Initial"),
+                   ev("L", "expected_starter", T0 + timedelta(hours=2), source="news")], cands=returning())
+    assert p["L"] == pytest.approx(0.90 + 0.10 * 0.25)
+    assert p["S"] == pytest.approx(0.10 * 0.75)
 
 
 def test_season_starter_still_questionable_is_not_promoted():
     p, _ = status([ev("S", "out", T0 - timedelta(days=7), slot="Initial", game=7),
                    ev("S", "questionable", T0, slot="Initial")], cands=returning())
-    assert p["L"] == pytest.approx(0.8 + 0.2 * 0.5)
+    assert p["L"] == pytest.approx(0.66 + 0.34 * 0.5)
 
 
 def test_season_starter_with_no_injury_history_is_not_promoted():
     p, _ = status([], cands=returning())
-    assert (p["L"], p["S"]) == (pytest.approx(0.8), pytest.approx(0.2))
+    assert (p["L"], p["S"]) == (pytest.approx(0.66), pytest.approx(0.34))
 
 
-def test_rule_version_is_v2():
-    assert RULE_VERSION == "v2"
+def test_rule_version_is_v3():
+    assert RULE_VERSION == "v3"
