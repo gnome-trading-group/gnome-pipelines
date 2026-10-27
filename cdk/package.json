@@ -10,7 +10,7 @@
     "cdk": "cdk"
   },
   "devDependencies": {
-    "@gnome-trading-group/gnome-shared-cdk": "^1.0.14",
+    "@gnome-trading-group/gnome-shared-cdk": "^1.4.0",
     "@types/node": "22.7.9",
     "aws-cdk": "^2.1029.0",
     "ts-node": "^10.9.2",

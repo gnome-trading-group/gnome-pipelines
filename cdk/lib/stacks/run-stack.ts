@@ -1,6 +1,5 @@
 import * as cdk from "aws-cdk-lib";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
-import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as ecr from "aws-cdk-lib/aws-ecr";
 import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as events from "aws-cdk-lib/aws-events";
@@ -13,7 +12,7 @@ import * as scheduler from "aws-cdk-lib/aws-scheduler";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import { Construct } from "constructs";
 import { DefaultDashboardFactory, MonitoringFacade, noopAction } from "cdk-monitoring-constructs";
-import { Stage } from "@gnome-trading-group/gnome-shared-cdk";
+import { lookupPlatformNetwork, Stage } from "@gnome-trading-group/gnome-shared-cdk";
 import { grantResearchTables } from "../research-tables";
 
 // gnome-controller's API Gateway routes /research/pipelines/* to the api function by name; manifest.py invokes sync.
@@ -99,12 +98,7 @@ export class RunStack extends cdk.Stack {
       partitionKey: { name: "ecs_task_arn", type: dynamodb.AttributeType.STRING },
     });
 
-    const vpc = ec2.Vpc.fromLookup(this, "Vpc", { vpcName: "gnome-orchestrator-vpc" });
-    const securityGroup = new ec2.SecurityGroup(this, "TaskSecurityGroup", {
-      vpc,
-      allowAllOutbound: true,
-      description: "Pipeline Fargate tasks - outbound only",
-    });
+    const { vpc, securityGroup } = lookupPlatformNetwork(this);
     const cluster = new ecs.Cluster(this, "Cluster", { vpc, clusterName: NAME });
 
     const taskRole = new iam.Role(this, "TaskRole", {

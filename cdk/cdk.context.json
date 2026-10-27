@@ -15,9 +15,9 @@
     "us-east-1e",
     "us-east-1f"
   ],
-  "vpc-provider:account=443370708724:filter.tag:Name=gnome-orchestrator-vpc:region=us-east-1:returnAsymmetricSubnets=true": {
-    "vpcId": "vpc-08d26cc70b65cec53",
-    "vpcCidrBlock": "10.0.0.0/16",
+  "vpc-provider:account=443370708724:filter.tag:gnome:network=platform:region=us-east-1:returnAsymmetricSubnets=true": {
+    "vpcId": "vpc-04780f859c76afb37",
+    "vpcCidrBlock": "10.144.0.0/16",
     "ownerAccountId": "443370708724",
     "availabilityZones": [],
     "subnetGroups": [
@@ -26,24 +26,28 @@
         "type": "Public",
         "subnets": [
           {
-            "subnetId": "subnet-0faebbe55f0ba3e4d",
-            "cidr": "10.0.0.0/24",
+            "subnetId": "subnet-0bb955dcc1777ed2d",
+            "cidr": "10.144.0.0/20",
             "availabilityZone": "us-east-1a",
-            "routeTableId": "rtb-0f18fa02fb3ba11f9"
+            "routeTableId": "rtb-074a9aef88aee7132"
           },
           {
-            "subnetId": "subnet-08a52a083005ffb3d",
-            "cidr": "10.0.1.0/24",
+            "subnetId": "subnet-06bf466ec2b84948d",
+            "cidr": "10.144.16.0/20",
             "availabilityZone": "us-east-1b",
-            "routeTableId": "rtb-0774396de85998844"
+            "routeTableId": "rtb-087df563c987e8126"
           }
         ]
       }
     ]
   },
-  "vpc-provider:account=241533121172:filter.tag:Name=gnome-orchestrator-vpc:region=us-east-1:returnAsymmetricSubnets=true": {
-    "vpcId": "vpc-0c80c8250a64c94c4",
-    "vpcCidrBlock": "10.0.0.0/16",
+  "security-group:account=443370708724:region=us-east-1:securityGroupName=gnome-platform-sg:vpcId=vpc-04780f859c76afb37": {
+    "securityGroupId": "sg-0f9736c826fe23808",
+    "allowAllOutbound": false
+  },
+  "vpc-provider:account=241533121172:filter.tag:gnome:network=platform:region=us-east-1:returnAsymmetricSubnets=true": {
+    "vpcId": "vpc-055896854ff753b5f",
+    "vpcCidrBlock": "10.128.0.0/16",
     "ownerAccountId": "241533121172",
     "availabilityZones": [],
     "subnetGroups": [
@@ -52,19 +56,23 @@
         "type": "Public",
         "subnets": [
           {
-            "subnetId": "subnet-0da5109acfbb04247",
-            "cidr": "10.0.0.0/24",
+            "subnetId": "subnet-0132279b314950471",
+            "cidr": "10.128.0.0/20",
             "availabilityZone": "us-east-1a",
-            "routeTableId": "rtb-0f215e88b9c0d868d"
+            "routeTableId": "rtb-0a58f7b2360848b28"
           },
           {
-            "subnetId": "subnet-02dc89383dda5b6a4",
-            "cidr": "10.0.1.0/24",
+            "subnetId": "subnet-0b82988aef9f932a6",
+            "cidr": "10.128.16.0/20",
             "availabilityZone": "us-east-1b",
-            "routeTableId": "rtb-0b3b5e27529a7b572"
+            "routeTableId": "rtb-0155e61843ab24612"
           }
         ]
       }
     ]
+  },
+  "security-group:account=241533121172:region=us-east-1:securityGroupName=gnome-platform-sg:vpcId=vpc-055896854ff753b5f": {
+    "securityGroupId": "sg-0b64c7ae66eb8ebfd",
+    "allowAllOutbound": false
   }
 }
