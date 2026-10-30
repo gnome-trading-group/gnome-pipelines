@@ -15,6 +15,8 @@ from tests.hltv_cs2.test_feature_blocks import _synthetic_history, _synthetic_li
 
 def _history(n_days=10):
     hist = _synthetic_history(n_days=n_days)
+    # The real cs2_match_history carries these; build_priors drops showmatches by them (gnomepy-research v1.3.1).
+    hist["event_name"], hist["format"] = "Synthetic League", "Best of 3"
     for side in ("a", "b"):
         hist[f"team_{side}_rank"] = hist[f"team_{side}_id"] + 1
         hist[f"team_{side}_vrs_rank"] = hist[f"team_{side}_id"] + 2
