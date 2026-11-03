@@ -19,10 +19,9 @@ def test_every_pipeline_declares_its_params():
         "hltv_rosters": "HltvRostersParams",
         "faceit_daily": "FaceitDailyParams",
         "faceit_backfill": "FaceitBackfillParams",
-        "cs2_prematch_train": "CS2PrematchTrainParams",
+        "cs2_e12_fit": "CS2E12FitParams",
+        "cs2_e12_blend": "CS2E12BlendParams",
         "cs2_upcoming": "CS2UpcomingParams",
-        "cs2_bayes_fit": "CS2BayesFitParams",
-        "cs2_bayes_blend": "CS2BayesBlendParams",
         "cfb_update": "CfbUpdateParams",
         "cfb_qb_status": "QbStatusParams",
     }

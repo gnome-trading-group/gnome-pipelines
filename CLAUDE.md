@@ -4,7 +4,7 @@ gnome-pipelines holds every writer of the research datasets and models: HLTV and
 tables, model fits, and the AWS infrastructure they run on. Datasets are append-only Iceberg tables on S3 Tables and
 artifacts are files indexed in the same bucket, both written through `gnomepy.data`. Consumers: gnomepy-research
 (reads only), gnome-launcher's CS2 scanner (reads `cs2_upcoming_matches` after each `cs2_upcoming` run), the CS2
-strategies (`cs2_upcoming_features`, the `cs2_bayes_fit` posterior), and gnome-controller's Research pages.
+strategies (`cs2_upcoming_features`, the `cs2_e12_fit` model and its blend), and gnome-controller's Research pages.
 
 ## Commands
 
@@ -36,9 +36,9 @@ cd cdk && npm ci && npx cdk synth
   `faceit_*` tables. `faceit_backfill` (no schedule) loads a research FACEIT build once.
 - `cs2_upcoming/`: `cs2_upcoming`, every 15 min. Upcoming BO3s from HLTV, venue listings and books (Polymarket
   Intl, Kalshi, Polymarket US), writes `cs2_upcoming_matches` and `cs2_upcoming_features`.
-- `cs2_prematch/train.py`: `cs2_prematch_train`, monthly on the 1st at 07:00 UTC. Pre-veto model refit.
-- `cs2_bayes/`: `cs2_bayes_fit`, Mondays 06:00 UTC, 8 vCPU/16 GB. `cs2_bayes_blend` has no schedule; run by hand
-  with weights from a research walk-forward.
+- `cs2_e12/`: `cs2_e12_fit`, Mondays 09:00 UTC (after `hltv_cs2` and `faceit_daily`), 4 vCPU/30 GB. Fits the
+  e12-wide-mm series model at that Monday and publishes `e12_model/cs2_series`; refuses on stale inputs or an
+  implausibly small fit. `cs2_e12_blend` has no schedule; run by hand with blend weights fitted in research.
 - `cs2_round_model/train.py`: not a pipeline; `poetry run python -m gnome_pipelines.cs2_round_model.train`.
 - `cfb/pipeline.py`: `cfb_update`, 08:00 and 20:00 UTC in Jan and Aug-Dec. CFBD refresh, quality-gated publish,
   feature tables; CFBD responses mirrored to `s3://<research bucket>/apicache/cfbd`.
@@ -113,7 +113,7 @@ cd cdk && npm ci && npx cdk synth
   - `Pipelines--Sync-Fault-Count-Error`: schedules still match the previous manifest. Re-run the image workflow.
   - `Pipelines--Api-Fault-Count-Warning`: the Pipelines page API errored.
 - No alarm watches dataset freshness. A stale dataset means a schedule is off, its runs fail, or the trigger alarm
-  fired; check the pipeline's recent runs on the Pipelines page. `cs2_series` sessions stop trading on a
-  `cs2_bayes_fit` posterior older than two weeks; a fit that didn't converge is not published.
+  fired; check the pipeline's recent runs on the Pipelines page. `cs2_e12_fit` does not publish on stale HLTV or
+  FACEIT inputs, so a gap in `hltv_cs2` or `faceit_daily` leaves the previous week's `e12_model` in place.
 - Runbooks (gnome-registry): `docs/runbooks/cloudwatch/Pipelines.md` (the alarms) and
   `docs/runbooks/alerts/PIPELINE_FAILED.md`. Fix, then re-run from the Pipelines page.

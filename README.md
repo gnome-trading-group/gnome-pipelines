@@ -11,9 +11,9 @@ through `gnomepy.data`; gnomepy-research holds the feature and model code these 
 | `gnome_pipelines/credentials.py` | `secret(name, env_var)`: the environment variable locally, else the `gnome/pipelines/<name>` secret |
 | `gnome_pipelines/hltv_cs2/` | The `hltv_cs2` pipeline: parsers (`scraper.py`; `roster.py` for team pages and the transfers feed), page sources (`fetch.py`: ZenRows, cache; `chrome.py`: local Chrome + demos), the collection loops (`collect.py`), page cache, demo parser, publishing |
 | `gnome_pipelines/hltv_rosters/` | `hltv_rosters`: every team's roster moves (joins, departures, benchings, loans, substitutes, coaches) and current roster, from HLTV team pages and the transfers feed |
-| `gnome_pipelines/cs2_prematch/` | `cs2_prematch_train`: the monthly pre-veto model refit |
-| `gnome_pipelines/cs2_bayes/` | `cs2_bayes_fit`: the weekly Bayesian series posterior the cs2_series sessions blend with the pre-veto model (not published unless it converged); `cs2_bayes_blend`: publishes the blend weights from a research walk-forward |
 | `gnome_pipelines/cs2_upcoming/` | `cs2_upcoming`: every 15 min, upcoming BO3s from HLTV (kickoff, status, lineups, features), their listings and books on Polymarket International, Kalshi and Polymarket US, for gnome-launcher and the CS2 strategies |
+| `gnome_pipelines/faceit/` | `faceit_daily`: FACEIT history of the linked players, organised series, the FACEIT-to-HLTV series link and the e12 model's exclusions; `faceit_backfill`: a research FACEIT build, loaded once |
+| `gnome_pipelines/cs2_e12/` | `cs2_e12_fit`: the weekly e12-wide-mm series model the cs2_series sessions price from (not published on stale inputs); `cs2_e12_blend`: publishes its market blend weights from research |
 | `gnome_pipelines/cs2_round_model/` | Round win probability model training |
 | `gnome_pipelines/cfb/` | CFBD ingestion, quality checks, feature snapshots, team-week posteriors, and the `cfb_update` pipeline (family `cfb`): the season refreshed twice daily in season, its CFBD responses mirrored to `s3://<research bucket>/apicache/cfbd`. `cfb/qb_status/` is the QB status service, run daily by the `cfb_qb_status` pipeline (same family): official reports, X, news, game-night flags and market alarms into timestamped start probabilities per team-game |
 | `gnome_pipelines/__init__.py` | `Pipeline[Params]`: what a pipeline declares (parameters, description, `Resources`, `Schedule`s) |
@@ -79,7 +79,7 @@ poetry run gnome-pipelines describe hltv_cs2                              # its 
 poetry run gnome-pipelines run hltv_cs2 --stage dev -p days_back=3 -p min_stars=0
 poetry run gnome-pipelines run cs2_upcoming --stage prod --params '{"dry_run": true}'
 poetry run gnome-pipelines run cs2_upcoming --stage prod -p dry_run=true -p fetcher=chrome   # no ZenRows credits
-poetry run gnome-pipelines run cs2_prematch_train --stage local          # ~/.cache/gnome-pipelines/warehouse
+poetry run gnome-pipelines run cs2_e12_fit --stage local                 # ~/.cache/gnome-pipelines/warehouse
 poetry run gnome-pipelines sync-schema cs2_upcoming_features --stage dev --drop-removed   # the plan; add --apply to make it
 
 # HLTV through a visible Chrome window instead of ZenRows, with demos for the round features
