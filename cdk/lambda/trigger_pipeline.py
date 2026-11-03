@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime, timezone
 
 from params import problems
-from store import now, pipeline, run_key, table
+from store import now, pipeline, run_key, stored, table
 from tasks import launch, task_definition
 
 
@@ -49,7 +49,7 @@ def start_run(pipeline_name: str, params: dict, trigger: str, schedule: str | No
         "run_id": run_id,
         "status": "PENDING",
         "trigger": trigger,
-        "parameters": params,
+        "parameters": stored(params),
         "queued_at": now(),
     }
     if schedule:

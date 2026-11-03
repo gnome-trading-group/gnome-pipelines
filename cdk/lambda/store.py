@@ -69,6 +69,17 @@ def response(status_code: int, body: dict) -> dict:
     return {"statusCode": status_code, "headers": CORS_HEADERS, "body": json.dumps(native(body), sort_keys=True)}
 
 
+def stored(obj):
+    """obj as DynamoDB takes it: boto3 refuses floats, so they become Decimals, through their text so 0.1 stays 0.1."""
+    if isinstance(obj, float):
+        return Decimal(str(obj))
+    if isinstance(obj, dict):
+        return {k: stored(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [stored(v) for v in obj]
+    return obj
+
+
 def native(obj):
     if isinstance(obj, Decimal):
         return int(obj) if obj % 1 == 0 else float(obj)

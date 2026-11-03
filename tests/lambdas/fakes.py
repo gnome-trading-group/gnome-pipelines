@@ -26,6 +26,14 @@ class _Pages:
         return self.pages
 
 
+def _no_floats(obj) -> None:
+    """boto3's DynamoDB serialiser refuses floats; the fake does too, so a float reaching a write fails here as it would live."""
+    if isinstance(obj, float):
+        raise TypeError("Float types are not supported. Use Decimal types instead.")
+    for v in obj.values() if isinstance(obj, dict) else obj if isinstance(obj, list) else ():
+        _no_floats(v)
+
+
 class Table:
     def __init__(self, items: list[dict] | None = None) -> None:
         self.items = {(i["pk"], i["sk"]): dict(i) for i in items or []}
@@ -36,6 +44,7 @@ class Table:
         return {"Item": dict(item)} if item else {}
 
     def put_item(self, Item, ConditionExpression=None):
+        _no_floats(Item)
         self.items[(Item["pk"], Item["sk"])] = dict(Item)
 
     def update_item(self, Key, UpdateExpression, ExpressionAttributeValues, ExpressionAttributeNames=None,

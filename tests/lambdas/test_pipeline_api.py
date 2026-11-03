@@ -21,6 +21,9 @@ SCHEMA = {
 HLTV = {"name": "hltv_cs2", "family": "cs2", "description": "HLTV", "params_schema": SCHEMA,
         "resources": {"cpu": 2048, "memory": 8192}, "code_version": "gnome-pipelines@abc",
         "schedules": [{"name": "weekly", "expression": "cron(0 6 ? * MON *)", "params": {"days_back": 8}, "description": ""}]}
+BLEND = {"name": "cs2_e12_blend", "family": "cs2", "description": "blend", "code_version": "gnome-pipelines@abc", "schedules": [],
+         "params_schema": {"type": "object", "properties": {"market": {"type": "number"}, "source": {"type": "string"}}},
+         "resources": {"cpu": 1024, "memory": 4096}}
 TRAIN = {"name": "cs2_prematch_train", "family": "cs2", "description": "train", "params_schema": {"type": "object", "properties": {}},
          "resources": {"cpu": 1024, "memory": 4096}, "code_version": "gnome-pipelines@abc", "schedules": []}
 
@@ -28,7 +31,7 @@ TRAIN = {"name": "cs2_prematch_train", "family": "cs2", "description": "train", 
 @pytest.fixture
 def aws(monkeypatch):
     env = {"table": fakes.Table(), "ecs": fakes.Ecs(), "scheduler": fakes.Scheduler(), "logs": fakes.Logs({})}
-    monkeypatch.setattr(store, "ssm", fakes.Ssm([HLTV, TRAIN]))
+    monkeypatch.setattr(store, "ssm", fakes.Ssm([HLTV, TRAIN, BLEND]))
     for module in (api, trigger_pipeline, sync_schedules):
         monkeypatch.setattr(module, "table", env["table"], raising=False)
     monkeypatch.setattr(tasks, "ecs", env["ecs"])
@@ -53,7 +56,7 @@ def test_lists_declared_pipelines_with_schedule_state_and_last_run(aws):
     status, body = call("GET", "/research/pipelines")
 
     hltv = next(p for p in body["pipelines"] if p["name"] == "hltv_cs2")
-    assert status == 200 and body["count"] == 2
+    assert status == 200 and body["count"] == 3
     assert hltv["schedules"][0] | {"enabled": False, "synced": True} == hltv["schedules"][0]
     assert hltv["last_run"]["status"] == "PENDING" and "pk" not in hltv["last_run"]
 
@@ -67,6 +70,16 @@ def test_a_run_takes_its_family_task_definition_the_declared_task_size_and_the_g
     assert aws["ecs"].calls[0]["taskDefinition"] == "arn:task-definition/gnome-pipelines-cs2"
     assert task["cpu"] == "2048" and task["memory"] == "8192"
     assert json.loads(environment["PIPELINE_PARAMS"]) == {"days_back": 3}
+
+
+def test_decimal_parameters_are_recorded_and_reach_the_task_unchanged(aws):
+    status, body = call("POST", "/research/pipelines/cs2_e12_blend/runs", {"parameters": {"market": 0.6123418580625587, "source": "x"}})
+
+    environment = {e["name"]: e["value"] for e in aws["ecs"].calls[0]["overrides"]["containerOverrides"][0]["environment"]}
+    assert status == 202
+    assert json.loads(environment["PIPELINE_PARAMS"]) == {"market": 0.6123418580625587, "source": "x"}
+    run = aws["table"].items[("RUN#cs2_e12_blend", body["run_id"])]
+    assert store.native(run["parameters"]) == {"market": 0.6123418580625587, "source": "x"}
 
 
 def test_bad_parameters_are_refused_before_a_task_starts(aws):
