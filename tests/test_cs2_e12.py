@@ -1,9 +1,12 @@
 """The e12 pipelines: the fit publishes only on fresh inputs and a plausible fit, at a Monday cutoff; the blend publishes its
 weights. The fit itself is replaced by a stand-in (models/cs2/e12 is tested in gnomepy-research)."""
+from datetime import datetime, timezone
+
 import numpy as np
 import pandas as pd
 import pytest
 from gnomepy.data import ArtifactStore, CatalogConfig
+from gnomepy.data.datasets import InputRecord
 from gnomepy_research.models.cs2.e12.blend import MarketBlend
 from gnomepy_research.models.cs2.e12.model import E12Model, TeamState
 from gnomepy_research.models.cs2.e12.skill import SkillFit
@@ -35,7 +38,10 @@ class _Tables:
 def local(tmp_path, monkeypatch):
     config = CatalogConfig(local_warehouse=tmp_path, artifact_root=str(tmp_path / "files"))
     monkeypatch.setattr(mod, "artifact_store", lambda: ArtifactStore(config))
-    monkeypatch.setattr(mod, "dataset_store", lambda: type("Store", (), {"loaded": []})())
+    # A table read twice (freshness check, then the fit) leaves two input records for one dataset.
+    loaded = [InputRecord("cs2_match_history", datetime(2026, 11, 2, tzinfo=timezone.utc), 1, 10, "a"),
+              InputRecord("cs2_match_history", datetime(2026, 11, 2, 1, tzinfo=timezone.utc), 2, 11, "b")]
+    monkeypatch.setattr(mod, "dataset_store", lambda: type("Store", (), {"loaded": loaded})())
     return config
 
 
@@ -57,6 +63,7 @@ def test_a_fit_on_fresh_inputs_is_published_at_its_monday(local, monkeypatch):
     store = ArtifactStore(local)
     published = E12Model.load(store.resolve(store.latest(mod.MODEL_TYPE, mod.NAME)))
     assert published.cutoff == CUTOFF and published.mm == {1: 0.1}
+    assert store.inputs(store.latest(mod.MODEL_TYPE, mod.NAME)).rows_hash.tolist() == ["b"]
 
 
 @pytest.mark.parametrize("tables,match", [(_Tables(hltv_age_days=5), "HLTV map"), (_Tables(faceit_age_days=6), "FACEIT game")])

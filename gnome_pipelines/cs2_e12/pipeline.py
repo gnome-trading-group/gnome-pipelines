@@ -79,7 +79,9 @@ class CS2E12FitPipeline(Pipeline[CS2E12FitParams]):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "e12.npz"
             model.save(path)
-            ref = artifact_store().publish(path, MODEL_TYPE, NAME, inputs=ds.loaded,
+            # The freshness checks and the fit read some tables more than once; the index takes one row per dataset.
+            inputs = list({r.dataset: r for r in ds.loaded}.values())
+            ref = artifact_store().publish(path, MODEL_TYPE, NAME, inputs=inputs,
                                            description=f"e12-wide-mm fit at {cutoff.date()}",
                                            params={"cutoff": cutoff.isoformat()}, metrics=info)
         logger.info("published %s/%s v%s", MODEL_TYPE, NAME, ref.version)
