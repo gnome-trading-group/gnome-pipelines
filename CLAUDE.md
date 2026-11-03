@@ -31,6 +31,9 @@ cd cdk && npm ci && npx cdk synth
 - `families/{cs2,cfb}.py`: `PIPELINES` per family; one image and one task definition each.
 - `hltv_cs2/`: `hltv_cs2`, daily 06:00 UTC. HLTV matches, stats, veto, h2h, rankings, then rebuilds `cs2_match_priors`.
 - `hltv_rosters/`: `hltv_rosters`, daily 05:30 UTC (`mode=daily`). Roster moves and current rosters.
+- `faceit/`: `faceit_daily`, 07:30 UTC daily (after `hltv_cs2`). FACEIT history of the players in
+  `cs2_hltv_faceit_map`, organised series, the FACEIT-to-HLTV series link and the e12 model's exclusions, into the
+  `faceit_*` tables. `faceit_backfill` (no schedule) loads a research FACEIT build once.
 - `cs2_upcoming/`: `cs2_upcoming`, every 15 min. Upcoming BO3s from HLTV, venue listings and books (Polymarket
   Intl, Kalshi, Polymarket US), writes `cs2_upcoming_matches` and `cs2_upcoming_features`.
 - `cs2_prematch/train.py`: `cs2_prematch_train`, monthly on the 1st at 07:00 UTC. Pre-veto model refit.
@@ -41,7 +44,7 @@ cd cdk && npm ci && npx cdk synth
   feature tables; CFBD responses mirrored to `s3://<research bucket>/apicache/cfbd`.
 - `cfb/qb_status/`: `cfb_qb_status`, daily 09:00 UTC in Jan and Aug-Dec. One long task (default 23.75 h) of
   15-60 s pollers; state (X spend, Claude cache) mirrored to `s3://<research bucket>/qb_status/state`.
-- `datasets/{cs2,cfb,qb_status}.py`: `TableSpec` schemas. `schema_sync.py`: the `sync-schema` logic.
+- `datasets/{cs2,faceit,cfb,qb_status}.py`: `TableSpec` schemas. `schema_sync.py`: the `sync-schema` logic.
 - `stores.py`, `credentials.py`, `environment.py`, `manifest.py`, `runner.py`, `cli.py`: framework.
 - `cdk/lib/stacks/data-stack.ts` (`PipelinesDataStack`): S3 Tables bucket `gnome-research-tables` (namespaces
   `research`, `artifacts`), SSM `/gnome/research/table-bucket-arn` and `/gnome/research/artifact-root`, the
@@ -69,7 +72,7 @@ cd cdk && npm ci && npx cdk synth
 - Never add Iceberg tags, branches or `history.expire.*` properties: they break S3 Tables snapshot management for
   the whole table.
 - Secrets: `credentials.secret(name, ENV_VAR)` uses the env var locally, else `gnome/pipelines/<name>` (us-east-1).
-  Names: `zenrows`, `cfbd`, `x`, `anthropic` (`SECRETS` in data-stack.ts). A placeholder value `unset` fails
+  Names: `zenrows`, `cfbd`, `x`, `anthropic`, `faceit` (`SECRETS` in data-stack.ts). A placeholder value `unset` fails
   loudly. Set real values only with `aws secretsmanager put-secret-value --profile dev|prod`, never in code.
 - `cfb_qb_status` runs with X and Claude off when `gnome/pipelines/x` or `gnome/pipelines/anthropic` is unset, and
   says so in its output rather than failing. It caps X spend with `x_monthly_usd` (default 60; sweeps stop at 80%)

@@ -25,6 +25,10 @@ from gnomepy_research.models.cs2.hltv.config import MAP_POOL
 from gnome_pipelines.credentials import secret
 from gnome_pipelines.hltv_cs2.html_cache import is_complete
 
+# Exhibition series (legends, mixed rosters, old CS:GO maps) carry no competitive signal; HLTV files every one under
+# this generic event. gnomepy-research filters the rows already published the same way.
+SHOWMATCH_EVENT = "Showmatch CS"
+
 logger = logging.getLogger(__name__)
 
 _BASE_URL = "https://www.hltv.org"
@@ -710,6 +714,9 @@ def parse_match_detail_html(soup: BeautifulSoup, match_id: int, stars: int = 0) 
         ]
         if any(n.lower() == "default" for n in raw_map_names):
             logger.info("match %d: contains a forfeit/default map — skipping", match_id)
+            return None
+        if h["event_name"] == SHOWMATCH_EVENT or "showmatch" in fmt.lower():
+            logger.info("match %d: showmatch — skipping", match_id)
             return None
 
         maps = []

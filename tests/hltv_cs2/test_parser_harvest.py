@@ -111,6 +111,10 @@ def test_forfeit_page_still_returns_none():
     assert parsed("hltv_forfeit") is None
 
 
+def test_showmatch_page_returns_none():
+    assert parsed("hltv_showmatch", match_id=2387507) is None
+
+
 def test_bo1_page_has_one_map_and_one_stat_block():
     result = parsed("hltv_match")
     assert len(result["rows"]) == 1
