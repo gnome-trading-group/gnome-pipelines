@@ -66,9 +66,12 @@ MATCH_COLUMNS = cs2.UPCOMING_MATCHES.schema.names
 
 
 class CS2UpcomingParams(PipelineParams):
-    window_hours: float = Field(12, gt=0, description="track a match from this many hours before kickoff")
+    # cs2_series trades the last hour and is launched 2h out, so tracking starts just before that, with time to find
+    # the venues' markets; a longer window spends credits on pages nothing trades from.
+    window_hours: float = Field(2.5, gt=0, description="track a match from this many hours before kickoff")
+    # Every run (each 15 min) inside the last 75 min, so a lineup change reaches a trading session within one run.
     refetch_bands: list[tuple[float, float]] = Field(
-        [(12, 120), (2, 20), (1, 15)],
+        [(2.5, 30), (1.25, 15)],
         description=("[hours before kickoff, minutes between match-page fetches]: within each band's hours, "
                      "a match page is refetched this often; the tightest band that applies wins"))
     daily_credit_budget: int = Field(15000, ge=0, description=(

@@ -34,8 +34,9 @@ cd cdk && npm ci && npx cdk synth
 - `faceit/`: `faceit_daily`, 07:30 UTC daily (after `hltv_cs2`). FACEIT history of the players in
   `cs2_hltv_faceit_map`, organised series, the FACEIT-to-HLTV series link and the e12 model's exclusions, into the
   `faceit_*` tables. `faceit_backfill` (no schedule) loads a research FACEIT build once.
-- `cs2_upcoming/`: `cs2_upcoming`, every 15 min. Upcoming BO3s from HLTV, venue listings and books (Polymarket
-  Intl, Kalshi, Polymarket US), writes `cs2_upcoming_matches` and `cs2_upcoming_features`.
+- `cs2_upcoming/`: `cs2_upcoming`, every 15 min. BO3s from 2.5h before kickoff (match pages every 15 min in the last
+  75), venue listings and books (Polymarket Intl, Kalshi, Polymarket US), writes `cs2_upcoming_matches` and
+  `cs2_upcoming_features`.
 - `cs2_e12/`: `cs2_e12_fit`, Mondays 09:00 UTC (after `hltv_cs2` and `faceit_daily`), 4 vCPU/30 GB. Fits the
   e12-wide-mm series model at that Monday and publishes `e12_model/cs2_series`; refuses on stale inputs or an
   implausibly small fit. `cs2_e12_blend` has no schedule; run by hand with blend weights fitted in research.
