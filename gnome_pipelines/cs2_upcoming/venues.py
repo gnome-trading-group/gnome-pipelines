@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import logging
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -27,6 +28,7 @@ import requests
 from gnomepy_research.models.cs2.prematch import polymarket
 from gnomepy_research.models.cs2.prematch.polymarket import norm
 
+logger = logging.getLogger(__name__)
 MARKET_COLUMNS = ["market_slug", "market", "meeting", "o0", "o1", "kickoff", "instruments", "esids", "final"]
 Ladder = tuple[dict[float, float], dict[float, float], pd.Timestamp]
 # Settled prices sit at 0 and 1; anything short of this is not a decided market.
@@ -141,6 +143,11 @@ class Kalshi:
     exchange_name = "Kalshi"
     API = "https://external-api.kalshi.com/trade-api/v2"
     SERIES = {"series": "KXCS2GAME", "game1": "KXCS2MAP"}
+    # A match's start as Kalshi schedules it now is on its milestone; the ticker keeps the time first scheduled, so a
+    # rescheduled match would fall outside identity's kickoff tolerance. Read from this far back; `limit` is required.
+    MILESTONE_CATEGORY = "Esports"
+    MILESTONE_LOOKBACK = pd.Timedelta(days=2)
+    MILESTONE_PAGE = 500
     # Kalshi encodes the scheduled start in the event ticker, in US Eastern time: 26OCT152000 is 20:00 ET, Oct 15 2026.
     STARTS = re.compile(r"^(\d{2})([A-Z]{3})(\d{2})(\d{2})(\d{2})")
     EASTERN = ZoneInfo("America/New_York")
@@ -149,7 +156,35 @@ class Kalshi:
 
     def markets(self, now: pd.Timestamp) -> pd.DataFrame:
         events = [e for series in self.SERIES.values() for e in self._events(series)]
-        return self.to_frame(events)
+        return self.to_frame(events, self._starts(now))
+
+    def _starts(self, now: pd.Timestamp) -> dict[str, pd.Timestamp]:
+        """{event ticker: scheduled start} from the esports milestones, each mapped to every event it relates (the
+        series, its maps, spread and totals). A failed read leaves every row on its ticker time: a missed reschedule
+        costs a Kalshi leg, a failed run every venue's."""
+        params = {"category": self.MILESTONE_CATEGORY, "limit": self.MILESTONE_PAGE,
+                  "minimum_start_date": (now - self.MILESTONE_LOOKBACK).strftime("%Y-%m-%dT%H:%M:%SZ")}
+        try:
+            return self.milestone_starts(lambda cursor: _get(
+                f"{self.API}/milestones", params={**params, **({"cursor": cursor} if cursor else {})}).json())
+        except requests.RequestException:
+            logger.warning("Kalshi milestones unavailable; kickoffs from tickers this run", exc_info=True)
+            return {}
+
+    @staticmethod
+    def milestone_starts(page) -> dict[str, pd.Timestamp]:
+        """Pages milestones through page(cursor) until the cursor runs out."""
+        starts, cursor = {}, ""
+        while True:
+            body = page(cursor)
+            for milestone in body.get("milestones") or []:
+                if milestone.get("start_date"):
+                    start = pd.Timestamp(milestone["start_date"]).tz_convert("UTC")
+                    for ticker in milestone.get("related_event_tickers") or []:
+                        starts[ticker] = start
+            cursor = body.get("cursor") or ""
+            if not cursor or not body.get("milestones"):
+                return starts
 
     def _events(self, series: str) -> list[dict]:
         events, cursor = [], None
@@ -165,16 +200,16 @@ class Kalshi:
                 return events
 
     @classmethod
-    def to_frame(cls, events: list[dict]) -> pd.DataFrame:
+    def to_frame(cls, events: list[dict], starts: dict[str, pd.Timestamp] | None = None) -> pd.DataFrame:
         rows = []
         for e in events:
-            row = cls._row(e)
+            row = cls._row(e, (starts or {}).get(e["event_ticker"]))
             if row is not None:
                 rows.append(row)
         return _frame(rows)
 
     @classmethod
-    def _row(cls, event: dict) -> dict | None:
+    def _row(cls, event: dict, start: pd.Timestamp | None = None) -> dict | None:
         series, _, rest = event["event_ticker"].partition("-")
         market = next((k for k, v in cls.SERIES.items() if v == series), None)
         if market == "game1":
@@ -190,7 +225,7 @@ class Kalshi:
         return {
             "market_slug": event["event_ticker"], "market": market, "meeting": meeting,
             "o0": norm(teams[0].get("yes_sub_title")), "o1": norm(teams[1].get("yes_sub_title")),
-            "kickoff": cls.kickoff(meeting), "instruments": [m["ticker"] for m in teams],
+            "kickoff": start if start is not None else cls.kickoff(meeting), "instruments": [m["ticker"] for m in teams],
             "esids": [m["ticker"] for m in teams], "final": cls._final(teams),
         }
 

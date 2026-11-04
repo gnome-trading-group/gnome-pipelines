@@ -1,0 +1,68 @@
+{
+ "milestones": [
+  {
+   "category": "Esports",
+   "details": {
+    "away_competitor_id": "454f4fef-9e0c-4e0b-9889-ae8078d7955b",
+    "game": "CS2",
+    "home_competitor_id": "852f9f70-e336-4f99-b1d2-4de747b2f26b",
+    "league": "CS2",
+    "main_game_event_ticker": "KXCS2GAME-26NOV0223309ZTYLOO",
+    "num_periods": 3,
+    "season_type": "IEM",
+    "season_week": "group b",
+    "season_year": "Beijing 2026",
+    "status": "completed",
+    "tournament_name": "IEM Beijing 2026"
+   },
+   "end_date": "2026-11-03T06:40:29Z",
+   "id": "91473891-835d-4737-b0ab-2e4d9f45dea0",
+   "primary_event_tickers": [
+    "KXCS2GAME-26NOV0223309ZTYLOO",
+    "KXCS2SPREAD-26NOV0223309ZTYLOO"
+   ],
+   "related_event_tickers": [
+    "KXCS2GAME-26NOV0223309ZTYLOO",
+    "KXCS2TOTALMAPS-26NOV0223309ZTYLOO",
+    "KXCS2MAP-26NOV0223309ZTYLOO-1",
+    "KXCS2MAP-26NOV0223309ZTYLOO-2",
+    "KXCS2SPREAD-26NOV0223309ZTYLOO"
+   ],
+   "start_date": "2026-11-03T04:45:00Z",
+   "title": "9z vs TYLOO",
+   "type": "esports_match"
+  },
+  {
+   "category": "Esports",
+   "details": {
+    "away_competitor_id": "d78e2e45-83ec-4692-92a0-f69b7cdf88b2",
+    "game": "CS2",
+    "home_competitor_id": "454f4fef-9e0c-4e0b-9889-ae8078d7955b",
+    "league": "CS2",
+    "main_game_event_ticker": "KXCS2GAME-26NOV032330TYLOOTL",
+    "num_periods": 3,
+    "season_type": "IEM",
+    "season_week": "group b",
+    "season_year": "Beijing 2026",
+    "status": "completed",
+    "tournament_name": "IEM Beijing 2026"
+   },
+   "id": "cf648e9f-8fa9-4047-b4fa-d0bdc1c00b4d",
+   "primary_event_tickers": [
+    "KXCS2GAME-26NOV032330TYLOOTL",
+    "KXCS2SPREAD-26NOV032330TYLOOTL"
+   ],
+   "related_event_tickers": [
+    "KXCS2GAME-26NOV032330TYLOOTL",
+    "KXCS2MAP-26NOV032330TYLOOTL-1",
+    "KXCS2MAP-26NOV032330TYLOOTL-2",
+    "KXCS2TOTALMAPS-26NOV032330TYLOOTL",
+    "KXCS2SPREAD-26NOV032330TYLOOTL"
+   ],
+   "start_date": "2026-11-04T02:00:00Z",
+   "title": "TYLOO vs Liquid",
+   "type": "esports_match"
+  }
+ ],
+ "cursor": ""
+}

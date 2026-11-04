@@ -37,6 +37,37 @@ def test_kalshi_kickoff_follows_daylight_saving():
     assert Kalshi.kickoff("NOTADATE") is None
 
 
+def _milestone_pages(name):
+    return lambda cursor: json.loads((FIXTURES / name).read_text())
+
+
+def test_kalshi_kickoff_is_the_milestone_start_when_the_match_was_rescheduled():
+    # TYLOO vs Liquid: the ticker kept 23:30 ET (04:30 UTC), the match started at 02:00 UTC.
+    starts = Kalshi.milestone_starts(_milestone_pages("kalshi_milestones_2026-11-04.json"))
+    frame = Kalshi.to_frame(_events("kalshi_events_2026-11-04.json"), starts).set_index("market")
+    assert frame.kickoff.tolist() == [pd.Timestamp("2026-11-04 02:00", tz="UTC")] * 2, "series and map 1"
+    assert frame.meeting.tolist() == ["26NOV032330TYLOOTL"] * 2, "the meeting stays the ticker's"
+    assert Kalshi.to_frame(_events("kalshi_events_2026-11-04.json")).kickoff.tolist() == \
+        [pd.Timestamp("2026-11-04 04:30", tz="UTC")] * 2, "an event with no milestone keeps the ticker time"
+
+
+def test_kalshi_milestones_are_read_page_by_page():
+    pages = {"": {"milestones": [{"start_date": "2026-11-04T02:00:00Z", "related_event_tickers": ["A", "A-1"]}],
+                  "cursor": "c2"},
+             "c2": {"milestones": [{"start_date": "2026-11-05T09:00:00Z", "related_event_tickers": ["B"]},
+                                   {"start_date": None, "related_event_tickers": ["C"]}], "cursor": ""}}
+    starts = Kalshi.milestone_starts(pages.__getitem__)
+    assert starts == {"A": pd.Timestamp("2026-11-04 02:00", tz="UTC"), "A-1": pd.Timestamp("2026-11-04 02:00", tz="UTC"),
+                      "B": pd.Timestamp("2026-11-05 09:00", tz="UTC")}
+
+
+def test_kalshi_kickoffs_fall_back_to_tickers_when_milestones_fail(monkeypatch):
+    def fail(url, **kwargs):
+        raise requests.HTTPError("503")
+    monkeypatch.setattr(venues, "_get", fail)
+    assert Kalshi()._starts(pd.Timestamp("2026-11-04 01:00", tz="UTC")) == {}
+
+
 def test_kalshi_settles_only_when_both_markets_have_a_result():
     teams = [{"ticker": "X-A", "result": "no"}, {"ticker": "X-B", "result": "yes"}]
     assert Kalshi._final(teams) == [0.0, 1.0]

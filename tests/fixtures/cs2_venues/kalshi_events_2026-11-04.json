@@ -1,0 +1,50 @@
+{
+ "events": [
+  {
+   "event_ticker": "KXCS2GAME-26NOV032330TYLOOTL",
+   "series_ticker": "KXCS2GAME",
+   "title": "TYLOO vs. Liquid",
+   "markets": [
+    {
+     "ticker": "KXCS2GAME-26NOV032330TYLOOTL-TYLOO",
+     "yes_sub_title": "TYLOO",
+     "no_sub_title": "TYLOO",
+     "status": "finalized",
+     "result": "no",
+     "occurrence_datetime": "2026-11-04T08:30:00Z"
+    },
+    {
+     "ticker": "KXCS2GAME-26NOV032330TYLOOTL-TL",
+     "yes_sub_title": "Liquid",
+     "no_sub_title": "Liquid",
+     "status": "finalized",
+     "result": "yes",
+     "occurrence_datetime": "2026-11-04T08:30:00Z"
+    }
+   ]
+  },
+  {
+   "event_ticker": "KXCS2MAP-26NOV032330TYLOOTL-1",
+   "series_ticker": "KXCS2MAP",
+   "title": "TYLOO vs. Liquid: Map 1 Winner",
+   "markets": [
+    {
+     "ticker": "KXCS2MAP-26NOV032330TYLOOTL-1-TYLOO",
+     "yes_sub_title": "TYLOO",
+     "no_sub_title": "TYLOO",
+     "status": "finalized",
+     "result": "no",
+     "occurrence_datetime": "2026-11-04T07:30:00Z"
+    },
+    {
+     "ticker": "KXCS2MAP-26NOV032330TYLOOTL-1-TL",
+     "yes_sub_title": "Liquid",
+     "no_sub_title": "Liquid",
+     "status": "finalized",
+     "result": "yes",
+     "occurrence_datetime": "2026-11-04T07:30:00Z"
+    }
+   ]
+  }
+ ]
+}
