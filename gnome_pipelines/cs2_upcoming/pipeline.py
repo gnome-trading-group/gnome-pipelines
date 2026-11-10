@@ -2,7 +2,9 @@
 Every 15 min: HLTV's view of the BO3s about to start, for gnome-launcher and the CS2 strategies.
 
 1. HLTV's /matches listing, every run: kickoff and live status for every listed match, for
-   one page. A match is tracked from window_hours before kickoff until it leaves the listing.
+   one page. A match is tracked from window_hours before kickoff until it leaves the listing; one first seen
+   already live (it started while this pipeline was down, or was listed late) is tracked from then, so the
+   strategies that trade a match while it is played can still be launched on it.
 2. Each tracked match's own page on a schedule that tightens toward kickoff (refetch_bands),
    for what only the page has: announced lineups, head-to-head, ranks. Features are built
    with build_priors_for, the code that built the training data, and appended to
@@ -106,6 +108,9 @@ def refetch_interval(to_kickoff: pd.Timedelta, bands: list[tuple[float, float]],
 
 
 def page_due(row: dict, now: pd.Timestamp, bands: list[tuple[float, float]], over_budget: bool) -> bool:
+    if row["status"] == LIVE:
+        # A match first seen live still needs its page once, for the team ids its venues are matched by.
+        return pd.isna(row["team_a_id"])
     if row["status"] != UPCOMING:
         return False
     if pd.isna(row["features_at"]):
@@ -125,8 +130,9 @@ def track(prev: dict[int, dict], listing: list[dict], now: pd.Timestamp,
           window: pd.Timedelta) -> dict[int, dict]:
     """
     This run's state for every tracked match. A listed BO3 with both teams named starts being
-    tracked inside the window, before kickoff. A tracked match missing from the listing turns
-    missing after MISSING_AFTER listings in a row, and then stops being tracked.
+    tracked inside the window, before kickoff, or when first seen live; a match this pipeline has already
+    finished or lost is never taken up again live. A tracked match missing from the listing turns missing after
+    MISSING_AFTER listings in a row, and then stops being tracked.
     """
     listed = {int(m["match_id"]): m for m in listing
               if m["match_time"] is not None and m["bo_type"] == 3 and m["team_a_name"] and m["team_b_name"]}
@@ -136,6 +142,8 @@ def track(prev: dict[int, dict], listing: list[dict], now: pd.Timestamp,
         if match_id in prev and prev[match_id]["status"] in ACTIVE:
             row = dict(prev[match_id])
         elif not m["is_live"] and now < kickoff <= now + window:
+            row = new_row(m)
+        elif m["is_live"] and match_id not in prev:
             row = new_row(m)
         else:
             continue
@@ -467,7 +475,7 @@ class CS2UpcomingPipeline(Pipeline[CS2UpcomingParams]):
         for venue in venues:
             stats = summary[venue.name]
             try:
-                pending = [r for r in rows.values() if r["status"] == UPCOMING and not pd.isna(r["team_a_id"])
+                pending = [r for r in rows.values() if r["status"] in ACTIVE and not pd.isna(r["team_a_id"])
                            and not any(leg["venue"] == venue.name for leg in json.loads(r["markets"]))]
                 if pending:
                     frame = venue.markets(now)

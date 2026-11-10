@@ -56,14 +56,16 @@ def test_a_page_is_due_on_first_sight_then_on_its_band():
     assert not up.page_due(_row(features_at=near - minutes(10)), near, BANDS, False)
 
 
-def test_a_live_match_page_is_never_refetched():
-    assert not up.page_due(_row(status=up.LIVE), NOW, BANDS, False)
+def test_a_live_match_page_is_fetched_only_while_its_teams_are_unknown():
+    assert up.page_due(_row(status=up.LIVE), NOW, BANDS, False)
+    assert not up.page_due(_row(status=up.LIVE, team_a_id=9565, features_at=NOW), NOW, BANDS, False)
 
 
 def test_tracking_starts_inside_the_window_for_named_bo3s_only():
     listing = [listed(1, KICK), listed(2, NOW + pd.Timedelta(hours=13)), listed(3, KICK, bo_type=1),
-               listed(4, KICK, team_b=None), listed(5, KICK, live=True), listed(6, NOW - minutes(5))]
-    assert set(up.track({}, listing, NOW, WINDOW)) == {1}
+               listed(4, KICK, team_b=None), listed(5, NOW - minutes(40), live=True), listed(6, NOW - minutes(5)),
+               listed(7, NOW - minutes(40), live=True, bo_type=1)]
+    assert set(up.track({}, listing, NOW, WINDOW)) == {1, 5}, "a BO3 first seen live is tracked from then"
 
 
 def test_kickoff_and_status_follow_the_listing():
@@ -291,3 +293,9 @@ def test_a_finished_match_is_not_tracked_again_while_hltv_still_lists_it():
 def test_state_reads_rows_stored_before_a_column_was_added():
     old = pd.DataFrame([{c: v for c, v in {**up.new_row(listed()), "generated_at": NOW}.items() if c != "winner"}])
     assert up.latest_state(old)[2398739]["winner"] is None
+
+
+def test_a_finished_or_missing_match_is_not_taken_up_again_when_listed_live():
+    for status in (up.FINISHED, up.MISSING):
+        prev = {2398739: {**up.new_row(listed()), "status": status}}
+        assert up.track(prev, [listed(live=True)], KICK + minutes(30), WINDOW) == {}
