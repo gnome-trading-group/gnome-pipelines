@@ -286,3 +286,8 @@ def test_an_unpaid_match_keeps_playing():
 def test_a_finished_match_is_not_tracked_again_while_hltv_still_lists_it():
     done = up.finish({2398739: _live_row(kickoff=KICK, kalshi=("K1", 0))}, {"kalshi": {"K1": [1.0, 0.0]}})
     assert up.track(done, [listed(live=True)], KICK + minutes(150), WINDOW) == {}
+
+
+def test_state_reads_rows_stored_before_a_column_was_added():
+    old = pd.DataFrame([{c: v for c, v in {**up.new_row(listed()), "generated_at": NOW}.items() if c != "winner"}])
+    assert up.latest_state(old)[2398739]["winner"] is None

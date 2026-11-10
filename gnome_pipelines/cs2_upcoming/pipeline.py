@@ -358,7 +358,9 @@ def latest_state(rows: pd.DataFrame) -> dict[int, dict]:
     if rows.empty:
         return {}
     newest = rows.sort_values("generated_at").groupby("match_id").tail(1)
-    return {int(r["match_id"]): {c: r[c] for c in MATCH_COLUMNS if c != "generated_at"}
+    # A column added to the table reads as absent until a snapshot written after it: the scan takes that snapshot's
+    # schema.
+    return {int(r["match_id"]): {c: r.get(c) for c in MATCH_COLUMNS if c != "generated_at"}
             for r in newest.to_dict("records")}
 
 
