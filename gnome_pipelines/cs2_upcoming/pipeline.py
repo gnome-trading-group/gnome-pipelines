@@ -13,9 +13,13 @@ Every 15 min: HLTV's view of the BO3s about to start, for gnome-launcher and the
 4. The top of book of each upcoming match's series and map-1 market on every venue, every run,
    whether or not the market is registered: the spreads and depth the strategies would really
    trade against.
-5. cs2_upcoming_matches gets a row per tracked match per run; the newest is its state.
+5. Each tracked match past kickoff, on every venue that has its series market: once any venue has settled it, the
+   match is finished, with the winner that venue paid. The launcher stops the sessions trading it; HLTV only drops a
+   finished match from its listing, which reads as missing two runs later.
+6. cs2_upcoming_matches gets a row per tracked match per run; the newest is its state.
 
-HLTV is the only source of match facts. The venues are read only to find markets and books.
+HLTV is the only source of match facts before kickoff. The venues are read to find markets and books, and for the
+result once one has paid out.
 Every page costs ZenRows credits, so a day's spend is capped: past daily_credit_budget,
 every match falls back to the slowest refetch interval. Locally, fetcher=chrome reads HLTV
 through a visible Chrome window instead, at no cost.
@@ -53,7 +57,7 @@ from gnomepy_research.models.cs2.prematch import identity
 
 logger = logging.getLogger(__name__)
 
-UPCOMING, LIVE, MISSING = "upcoming", "live", "missing"
+UPCOMING, LIVE, MISSING, FINISHED = "upcoming", "live", "missing", "finished"
 ACTIVE = (UPCOMING, LIVE)
 # One bad parse of the listing must not end a match: its session would be shut down.
 MISSING_AFTER = 2
@@ -114,7 +118,7 @@ def new_row(listed: dict) -> dict:
     return {"match_id": int(listed["match_id"]), "team_a_id": None, "team_b_id": None,
             "team_a_name": listed["team_a_name"], "team_b_name": listed["team_b_name"],
             "kickoff": listed["match_time"], "stars": listed["stars"], "status": UPCOMING, "missed_listings": 0,
-            "features_at": pd.NaT, "markets": "[]", "venues": "{}"}
+            "features_at": pd.NaT, "markets": "[]", "venues": "{}", "winner": None}
 
 
 def track(prev: dict[int, dict], listing: list[dict], now: pd.Timestamp,
@@ -145,6 +149,34 @@ def track(prev: dict[int, dict], listing: list[dict], now: pd.Timestamp,
         if row["missed_listings"] >= MISSING_AFTER:
             row["status"] = MISSING
         out[match_id] = row
+    return out
+
+
+def settled_series(rows: dict[int, dict], now: pd.Timestamp) -> dict[str, set[str]]:
+    """Per venue, the series markets of every tracked match past kickoff: the ones a venue may have paid out."""
+    out: dict[str, set[str]] = {}
+    for r in rows.values():
+        if r["status"] in ACTIVE and pd.Timestamp(r["kickoff"]) <= now:
+            for venue, state in json.loads(r["venues"]).items():
+                out.setdefault(venue, set()).add(state["series"])
+    return out
+
+
+def finish(rows: dict[int, dict], finals: dict[str, dict[str, list[float]]]) -> dict[int, dict]:
+    """
+    The tracked matches some venue has paid out, now finished with the team that venue paid ("team_a" or "team_b").
+    Only the series market counts: map 1 pays out with the series still being played.
+    """
+    out = {}
+    for mid, r in rows.items():
+        if r["status"] not in ACTIVE:
+            continue
+        for venue, state in json.loads(r["venues"]).items():
+            final = finals.get(venue, {}).get(state["series"])
+            if final:
+                won_a = final[int(state["team_a_outcome"])] > 0.5
+                out[mid] = {**r, "status": FINISHED, "winner": "team_a" if won_a else "team_b"}
+                break
     return out
 
 
@@ -382,6 +414,8 @@ class CS2UpcomingPipeline(Pipeline[CS2UpcomingParams]):
         summary = {v.name: {"matched": 0, "tradable": 0, "skipped": {}, "books": 0} for v in venues}
         aliases, settled = self._markets(ds, venues, rows, prev, now, summary)
         books = self._books(venues, rows, summary)
+        finished = self._finished(venues, rows, now, summary)
+        rows.update(finished)
         for v in venues:
             states = [json.loads(r["venues"]).get(v.name) for r in rows.values()]
             summary[v.name]["matched"] = sum(s is not None for s in states)
@@ -394,8 +428,9 @@ class CS2UpcomingPipeline(Pipeline[CS2UpcomingParams]):
             if len(features):
                 publish(cs2.UPCOMING_FEATURES, features.assign(generated_at=now))
             if changed:
+                # Rows read back from before a column was added don't carry it.
                 publish(cs2.UPCOMING_MATCHES, pd.DataFrame(
-                    [{**r, "generated_at": now} for r in changed.values()])[MATCH_COLUMNS])
+                    [{**r, "generated_at": now} for r in changed.values()]).reindex(columns=MATCH_COLUMNS))
             if len(books):
                 publish(cs2.UPCOMING_BOOKS, books.assign(generated_at=now))
             if aliases is not None:
@@ -409,7 +444,7 @@ class CS2UpcomingPipeline(Pipeline[CS2UpcomingParams]):
         return PipelineResult(status="succeeded", outputs={
             "listing_ok": True, "tracked": statuses, "pages_due": len(pages), "features": len(features),
             "with_markets": sum(r["markets"] != "[]" for r in rows.values()), "venues": summary,
-            "books": len(books), "aliases_settled": len(settled), "credits": credits,
+            "books": len(books), "aliases_settled": len(settled), "finished": len(finished), "credits": credits,
             "credits_today": spent + credits, "over_budget": over_budget,
             "dry_run": params.dry_run,
         })
@@ -456,6 +491,25 @@ class CS2UpcomingPipeline(Pipeline[CS2UpcomingParams]):
                 logger.exception("%s: markets skipped this run", venue.name)
                 stats["error"] = str(exc)
         return aliases, settled
+
+    @staticmethod
+    def _finished(venues: list[Venue], rows: dict[int, dict], now: pd.Timestamp,
+                  summary: dict[str, dict]) -> dict[int, dict]:
+        """The tracked matches a venue has paid out this run. A venue that fails is skipped; the next run asks again."""
+        wanted = settled_series(rows, now)
+        finals: dict[str, dict[str, list[float]]] = {}
+        for venue in venues:
+            if not wanted.get(venue.name):
+                continue
+            try:
+                finals[venue.name] = venue.finals(sorted(wanted[venue.name]))
+            except Exception as exc:
+                logger.exception("%s: results skipped this run", venue.name)
+                summary[venue.name]["error"] = str(exc)
+        finished = finish(rows, finals)
+        for mid, r in finished.items():
+            logger.info("match %d finished: %s won", mid, r["winner"])
+        return finished
 
     @staticmethod
     def _books(venues: list[Venue], rows: dict[int, dict], summary: dict[str, dict]) -> pd.DataFrame:

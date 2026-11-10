@@ -413,6 +413,8 @@ UPCOMING_MATCHES = TableSpec(
         # JSON: per venue, the matched series market, team A's outcome, team A's instrument per
         # market, and the aliases the match taught (with whether settlement has judged them).
         pa.field("venues", pa.string()),
+        # Once status is finished: "team_a" or "team_b", the team the first venue to pay out paid.
+        pa.field("winner", pa.string()),
         pa.field("generated_at", pa.timestamp("us", tz="UTC"), nullable=False),
     ]),
     key=("match_id", "generated_at"),

@@ -258,3 +258,31 @@ def test_chrome_is_refused_in_the_task(monkeypatch):
     monkeypatch.setattr(up, "environment", lambda: type("E", (), {"in_task": True})())
     with pytest.raises(ValueError, match="run it locally"):
         up.CS2UpcomingPipeline().run(up.CS2UpcomingParams(fetcher="chrome"))
+
+
+def _live_row(kickoff=NOW - minutes(90), **venues):
+    row = {**up.new_row(listed()), "kickoff": kickoff, "status": up.LIVE}
+    return {**row, "venues": json.dumps({v: {"series": s, "team_a_outcome": o} for v, (s, o) in venues.items()})}
+
+
+def test_only_matches_past_kickoff_ask_the_venues_for_a_result():
+    rows = {1: _live_row(kalshi=("K1", 0), polymarket_us=("U1", 1)),
+            2: _live_row(kickoff=NOW + minutes(30), kalshi=("K2", 0)),
+            3: {**_live_row(kalshi=("K3", 0)), "status": up.MISSING}}
+    assert up.settled_series(rows, NOW) == {"kalshi": {"K1"}, "polymarket_us": {"U1"}}
+
+
+def test_the_first_venue_to_pay_out_finishes_the_match_with_its_winner():
+    rows = {1: _live_row(kalshi=("K1", 1), polymarket_us=("U1", 0)), 2: _live_row(kalshi=("K2", 0))}
+    done = up.finish(rows, {"kalshi": {"K1": [0.0, 1.0]}, "polymarket_us": {}})
+    assert list(done) == [1]
+    assert done[1]["status"] == up.FINISHED and done[1]["winner"] == "team_a", "team A is the Kalshi outcome 1 paid"
+
+
+def test_an_unpaid_match_keeps_playing():
+    assert up.finish({1: _live_row(kalshi=("K1", 0))}, {"kalshi": {}}) == {}
+
+
+def test_a_finished_match_is_not_tracked_again_while_hltv_still_lists_it():
+    done = up.finish({2398739: _live_row(kickoff=KICK, kalshi=("K1", 0))}, {"kalshi": {"K1": [1.0, 0.0]}})
+    assert up.track(done, [listed(live=True)], KICK + minutes(150), WINDOW) == {}

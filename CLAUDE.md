@@ -38,9 +38,9 @@ cd cdk && npm ci && npx cdk synth
   75), venue listings and books (Polymarket Intl, Kalshi, Polymarket US), writes `cs2_upcoming_matches` and
   `cs2_upcoming_features`. Kalshi's kickoff is its esports milestone's start (tickers keep the original schedule),
   else the ticker's time.
-- `cs2_e12/`: `cs2_e12_fit`, Mondays 09:00 UTC (after `hltv_cs2` and `faceit_daily`), 4 vCPU/30 GB. Fits the
-  e12-wide-mm series model at that Monday and publishes `e12_model/cs2_series`; refuses on stale inputs or an
-  implausibly small fit. `cs2_e12_blend` has no schedule; run by hand with blend weights fitted in research.
+- `cs2_e12/`: `cs2_e12_fit`, daily 08:30 UTC (after `hltv_cs2` and `faceit_daily`), 4 vCPU/30 GB. Fits the
+  e12-wide-mm series model at its start time and publishes `e12_model/cs2_series`; refuses on inputs more than 2 days
+  stale, an implausibly small fit, or a skill fit whose gradient shows it stopped short of the optimum. `cs2_e12_blend` has no schedule; run by hand with blend weights fitted in research.
 - `cs2_round_model/train.py`: not a pipeline; `poetry run python -m gnome_pipelines.cs2_round_model.train`.
 - `cfb/pipeline.py`: `cfb_update`, 08:00 and 20:00 UTC in Jan and Aug-Dec. CFBD refresh, quality-gated publish,
   feature tables; CFBD responses mirrored to `s3://<research bucket>/apicache/cfbd`.
@@ -116,6 +116,7 @@ cd cdk && npm ci && npx cdk synth
   - `Pipelines--Api-Fault-Count-Warning`: the Pipelines page API errored.
 - No alarm watches dataset freshness. A stale dataset means a schedule is off, its runs fail, or the trigger alarm
   fired; check the pipeline's recent runs on the Pipelines page. `cs2_e12_fit` does not publish on stale HLTV or
-  FACEIT inputs, so a gap in `hltv_cs2` or `faceit_daily` leaves the previous week's `e12_model` in place.
+  FACEIT inputs, so a gap in `hltv_cs2` or `faceit_daily` leaves the previous day's `e12_model` in place (the
+  `cs2_series` sessions stop trading once the newest is more than 2 days old).
 - Runbooks (gnome-registry): `docs/runbooks/cloudwatch/Pipelines.md` (the alarms) and
   `docs/runbooks/alerts/PIPELINE_FAILED.md`. Fix, then re-run from the Pipelines page.
