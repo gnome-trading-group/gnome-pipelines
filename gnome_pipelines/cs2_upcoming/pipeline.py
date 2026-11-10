@@ -133,21 +133,28 @@ def track(prev: dict[int, dict], listing: list[dict], now: pd.Timestamp,
     tracked inside the window, before kickoff, or when first seen live; a match this pipeline has already
     finished or lost is never taken up again live. A tracked match missing from the listing turns missing after
     MISSING_AFTER listings in a row, and then stops being tracked.
+
+    HLTV's listing shows no time for a live match: it keeps the kickoff it had, and one first seen live takes now
+    until its page gives the real one.
     """
     listed = {int(m["match_id"]): m for m in listing
-              if m["match_time"] is not None and m["bo_type"] == 3 and m["team_a_name"] and m["team_b_name"]}
+              if (m["match_time"] is not None or m["is_live"]) and m["bo_type"] == 3
+              and m["team_a_name"] and m["team_b_name"]}
     out = {}
     for match_id, m in listed.items():
-        kickoff = pd.Timestamp(m["match_time"])
+        kickoff = pd.Timestamp(m["match_time"]) if m["match_time"] is not None else None
         if match_id in prev and prev[match_id]["status"] in ACTIVE:
             row = dict(prev[match_id])
         elif not m["is_live"] and now < kickoff <= now + window:
             row = new_row(m)
         elif m["is_live"] and match_id not in prev:
             row = new_row(m)
+            row["kickoff"] = now
         else:
             continue
-        row.update(kickoff=kickoff, stars=m["stars"], missed_listings=0, status=LIVE if m["is_live"] else UPCOMING)
+        if kickoff is not None:
+            row["kickoff"] = kickoff
+        row.update(stars=m["stars"], missed_listings=0, status=LIVE if m["is_live"] else UPCOMING)
         out[match_id] = row
     for match_id, p in prev.items():
         if match_id in listed or p["status"] not in ACTIVE:
@@ -158,6 +165,13 @@ def track(prev: dict[int, dict], listing: list[dict], now: pd.Timestamp,
             row["status"] = MISSING
         out[match_id] = row
     return out
+
+
+def apply_page(row: dict, parsed: dict) -> None:
+    """Take a match page's team ids, and, for a live match, its kickoff: the listing shows none for it."""
+    row.update(team_a_id=int(parsed["match"]["team_a_id"]), team_b_id=int(parsed["match"]["team_b_id"]))
+    if row["status"] == LIVE and parsed["match"].get("match_time") is not None:
+        row["kickoff"] = pd.Timestamp(parsed["match"]["match_time"])
 
 
 def settled_series(rows: dict[int, dict], now: pd.Timestamp) -> dict[str, set[str]]:
@@ -412,7 +426,7 @@ class CS2UpcomingPipeline(Pipeline[CS2UpcomingParams]):
                 logger.warning("match %d: page not fetched or teams not known yet", mid)
                 continue
             parsed.append(p)
-            rows[mid].update(team_a_id=int(p["match"]["team_a_id"]), team_b_id=int(p["match"]["team_b_id"]))
+            apply_page(rows[mid], p)
 
         logger.info("%d of %d pages parsed", len(parsed), len(pages))
         features = feature_rows(parsed, ds) if parsed else pd.DataFrame()

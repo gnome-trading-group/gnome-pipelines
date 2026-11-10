@@ -10,10 +10,12 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from bs4 import BeautifulSoup
 
 from gnome_pipelines.cs2_upcoming import pipeline as up
 from gnome_pipelines.cs2_upcoming.venues import PolymarketIntl
 from gnome_pipelines.hltv_cs2.fetch import run_with_source
+from gnome_pipelines.hltv_cs2.scraper import parse_upcoming_listing_html, parse_upcoming_match_html
 from gnomepy_research.models.cs2.prematch import identity
 from gnomepy_research.models.cs2.prematch.polymarket import index_markets
 
@@ -26,8 +28,13 @@ MATCH = {"match_id": 2398739, "team_a_id": 9565, "team_a_name": "Vitality", "tea
 
 
 def listed(match_id=2398739, kickoff=KICK, live=False, bo_type=3, team_b="Falcons"):
-    return {"match_id": match_id, "match_time": kickoff, "stars": 1, "event_id": 1, "bo_type": bo_type,
+    """A listing entry as the parser reads it: HLTV shows no time for a live match."""
+    return {"match_id": match_id, "match_time": None if live else kickoff, "stars": 1, "event_id": 1, "bo_type": bo_type,
             "is_live": live, "team_a_name": "Vitality", "team_b_name": team_b}
+
+
+def _soup(name):
+    return BeautifulSoup(gzip.open(FIXTURES / f"{name}.html.gz", "rt").read(), "lxml")
 
 
 def minutes(m):
@@ -74,6 +81,34 @@ def test_kickoff_and_status_follow_the_listing():
     assert moved[2398739]["kickoff"] == KICK + pd.Timedelta(hours=2)
     live = up.track(moved, [listed(live=True)], KICK, WINDOW)
     assert live[2398739]["status"] == up.LIVE
+    assert live[2398739]["kickoff"] == KICK + pd.Timedelta(hours=2), "the listing shows no time once live"
+    still = up.track(live, [listed(live=True)], KICK + minutes(15), WINDOW)
+    assert still[2398739]["status"] == up.LIVE and still[2398739]["missed_listings"] == 0
+
+
+def test_a_match_first_seen_live_takes_now_as_kickoff_until_its_page_gives_one():
+    rows = up.track({}, [listed(live=True)], NOW, WINDOW)
+    assert rows[2398739]["status"] == up.LIVE and rows[2398739]["kickoff"] == NOW
+    assert up.page_due(rows[2398739], NOW, BANDS, False)
+    page = parse_upcoming_match_html(_soup("hltv_live_bo3"), 2400235)
+    up.apply_page(rows[2398739], page)
+    assert rows[2398739]["kickoff"] == pd.Timestamp("2026-11-10 15:00", tz="UTC")
+    assert (rows[2398739]["team_a_id"], rows[2398739]["team_b_id"]) == (13908, 11110)
+
+
+def test_an_upcoming_match_page_leaves_the_listing_kickoff_alone():
+    rows = up.track({}, [listed()], NOW, WINDOW)
+    up.apply_page(rows[2398739], parse_upcoming_match_html(_soup("hltv_live_bo3"), 2400235))
+    assert rows[2398739]["kickoff"] == KICK
+
+
+def test_live_bo3s_on_the_real_listing_are_tracked():
+    listing = parse_upcoming_listing_html(gzip.open(FIXTURES / "hltv_upcoming_listing.html.gz", "rt").read())
+    rows = up.track({}, listing, NOW, WINDOW)
+    live = {mid for mid, r in rows.items() if r["status"] == up.LIVE}
+    assert 2398737 in live, "Spirit vs MOUZ, live BO3 on the 2026-10-05 listing"
+    prev = {2398737: {**up.new_row(listed(2398737)), "status": up.UPCOMING, "kickoff": NOW - minutes(30)}}
+    assert up.track(prev, listing, NOW, WINDOW)[2398737]["status"] == up.LIVE, "not missing once it goes live"
 
 
 def test_a_match_turns_missing_only_after_consecutive_absences_then_drops_out():

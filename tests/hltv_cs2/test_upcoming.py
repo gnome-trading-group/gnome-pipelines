@@ -41,6 +41,12 @@ def test_listing_reads_time_format_stars_and_teams(listing):
     assert listing[2398737]["is_live"]
 
 
+def test_a_live_match_shows_its_format_but_no_time(listing):
+    """Its first meta reads "Live"; reading only that once dropped every live match from cs2_upcoming."""
+    m = listing[2398737]
+    assert (m["bo_type"], m["match_time"], m["is_live"]) == (3, None, True)
+
+
 def test_listing_marks_tbd_teams(listing):
     assert listing[2398396]["team_a_name"] is None and listing[2398396]["team_b_name"] is None
 

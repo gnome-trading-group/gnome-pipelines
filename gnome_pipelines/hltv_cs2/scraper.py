@@ -840,6 +840,7 @@ def parse_match_detail_html(soup: BeautifulSoup, match_id: int, stars: int = 0) 
 def parse_upcoming_listing_html(html: str) -> list[dict]:
     """
     Every match on HLTV's /matches page: id, scheduled time, stars, format and team names.
+    A live match shows no time on the listing, so its match_time is None.
 
     Teams are None while still TBD (later Swiss rounds, playoff brackets); such
     matches cannot be priced yet and are left for a later run.
@@ -853,7 +854,8 @@ def parse_upcoming_listing_html(html: str) -> list[dict]:
         seen.add(match_id)
         time_el = wrap.select_one(".match-time[data-unix]")
         unix = _int_or_none(time_el.get("data-unix")) if time_el else None
-        meta = wrap.select_one(".match-meta")
+        # A live match's first meta reads "Live"; its format is in a later one.
+        meta = " ".join(el.get_text(strip=True) for el in wrap.select(".match-meta"))
         names = [el.get_text(strip=True) or None for el in wrap.select(".match-teamname")][:2]
         while len(names) < 2:
             names.append(None)
@@ -862,7 +864,7 @@ def parse_upcoming_listing_html(html: str) -> list[dict]:
             "match_time": datetime.datetime.fromtimestamp(unix / 1000, tz=datetime.timezone.utc) if unix else None,
             "stars": _int_or_none(wrap.get("data-stars")) or 0,
             "event_id": _int_or_none(wrap.get("data-event-id")),
-            "bo_type": _int_or_none(bo.group(1)) if (bo := re.search(r"bo(\d)", meta.get_text(strip=True) if meta else "")) else None,
+            "bo_type": _int_or_none(bo.group(1)) if (bo := re.search(r"bo(\d)", meta)) else None,
             "is_live": "live-match-container" in (wrap.get("class") or []),
             "team_a_name": names[0],
             "team_b_name": names[1],
