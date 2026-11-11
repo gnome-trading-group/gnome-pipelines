@@ -7,10 +7,12 @@ import httpx2
 import pandas as pd
 import pytest
 
-from gnome_pipelines.cfb.qb_status.extract import (CLAUDE_MODEL, ClaudeExtractor, ExtractionUnavailable, NotConfigured,
+from gnome_pipelines.cfb.qb_status.extract import (CLAUDE_MODEL, ClaudeExtractor, ExtractionUnavailable,
                                                    RuleExtractor)
 from gnome_pipelines.cfb.qb_status.news import news_evidence, parse_rss, rss_url
+from gnome_pipelines.cfb.qb_status.state_store import ClaudeReadCache, LocalObjects
 from gnome_pipelines.cfb.qb_status.x_source import ReadBudget, XSource, build_queries, x_evidence
+from gnome_pipelines.polling.claude import NotConfigured
 
 SEEN = datetime(2026, 10, 22, 14, 0, tzinfo=timezone.utc)
 QBS = pd.DataFrame([{"player_id": "9000001", "name": "Avery Stone", "jersey": "1", "passer_key": "9000001"},
@@ -42,9 +44,8 @@ def test_claude_extractor_requires_key():
 
 def test_claude_key_comes_from_the_secret_store(tmp_path):
     asked = []
-    x = ClaudeExtractor(secret_fn=lambda name, env: asked.append((name, env)) or "sk-test",
-                        cache_path=tmp_path / "c.jsonl")
-    assert asked == [("anthropic", "ANTHROPIC_API_KEY")] and x.client.api_key == "sk-test"
+    x = ClaudeExtractor(secret_fn=lambda name, env: asked.append((name, env)) or "sk-test")
+    assert asked == [("anthropic", "ANTHROPIC_API_KEY")] and x.reader.client.api_key == "sk-test"
 
 
 class FakeClient:
@@ -72,7 +73,7 @@ def said(pid, status, hedge="confirmed", timing="upcoming", confidence=0.95):
 
 def claude(tmp_path, *replies, **kw):
     client = FakeClient(*replies)
-    return ClaudeExtractor(client=client, cache_path=tmp_path / "claude.jsonl", **kw), client
+    return ClaudeExtractor(client=client, cache=ClaudeReadCache(LocalObjects(tmp_path)), **kw), client
 
 
 def test_claude_reads_a_post_into_claims(tmp_path):
@@ -114,7 +115,8 @@ def test_each_text_is_read_once_even_across_restarts(tmp_path):
     assert x.extract("Avery Stone doubtful, per sources.", 344, QBS) == first and len(client.calls) == 1
     again, client2 = claude(tmp_path)
     assert again.extract("Avery Stone doubtful, per sources.", 344, QBS) == first and client2.calls == []
-    assert "Avery Stone doubtful" not in (tmp_path / "claude.jsonl").read_text()
+    stored = [p.read_text() for p in (tmp_path / "claude").iterdir()]
+    assert len(stored) == 1 and "Avery Stone doubtful" not in stored[0]
 
 
 def test_api_errors_and_the_daily_cap_make_the_reader_unavailable(tmp_path):

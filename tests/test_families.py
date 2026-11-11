@@ -13,6 +13,7 @@ import ast
 import importlib
 import inspect
 import pkgutil
+import re
 import sys
 import tomllib
 from importlib.metadata import PackageNotFoundError, distribution, packages_distributions
@@ -25,6 +26,7 @@ from packaging.utils import canonicalize_name
 
 import gnome_pipelines
 from gnome_pipelines import Pipeline, families
+from gnome_pipelines.polling.source import PollingSource
 
 ROOT = Path(gnome_pipelines.__file__).parent
 PROJECT = tomllib.loads((ROOT.parent / "pyproject.toml").read_text())["project"]
@@ -132,10 +134,46 @@ def test_every_pipeline_is_in_exactly_one_family():
     assert all(inspect.isclass(c) and issubclass(c, Pipeline) for c in listed)
 
 
+def test_every_polling_source_is_in_exactly_one_family():
+    for module in pkgutil.walk_packages(gnome_pipelines.__path__, "gnome_pipelines."):
+        importlib.import_module(module.name)
+    defined = {cls for cls in PollingSource.__subclasses__() if cls.__module__.startswith("gnome_pipelines.")}
+    listed = [cls for family in families.names() for cls in importlib.import_module(
+        f"gnome_pipelines.families.{family}").SOURCES]
+
+    assert sorted(c.__name__ for c in listed) == sorted(c.__name__ for c in defined)
+    assert len({c.name for c in listed}) == len(listed)
+
+
+def test_the_polling_framework_runs_without_anthropic():
+    # Only sources that have Claude read text import polling.claude; every family image can run pollers.
+    core = ["gnome_pipelines.polling." + m for m in ("service", "health", "state", "source", "serve")]
+    seen, stack = set(), list(core)
+    while stack:
+        module = stack.pop()
+        if module in seen or _source(module) is None:
+            continue
+        seen.add(module)
+        stack += [n for n in _imports(module) if n.startswith("gnome_pipelines.")]
+    assert "gnome_pipelines.polling.claude" not in seen
+    assert not [m for m in seen if "anthropic" in _imports(m) or any(n.startswith("anthropic") for n in _imports(m))]
+
+
 def test_an_image_sees_only_its_own_family(monkeypatch):
     monkeypatch.setenv(families.FAMILY_VARIABLE, "cs2")
     assert families.available() == families.pipelines("cs2")
+    assert families.available_sources() == families.sources("cs2") == {}
 
     monkeypatch.setenv(families.FAMILY_VARIABLE, "nope")
     with pytest.raises(ValueError, match="no pipeline family 'nope'"):
         families.available()
+
+
+def test_every_polling_source_has_a_task_definition_with_its_secrets_in_the_run_stack():
+    stack = (ROOT.parent / "cdk" / "lib" / "stacks" / "run-stack.ts").read_text()
+    block = stack[stack.index("POLLING_SOURCES"):stack.index("];", stack.index("POLLING_SOURCES"))]
+    declared = {name: (family, tuple(re.findall(r'"(\w+)"', secrets))) for name, family, secrets in
+                re.findall(r'source: "(\w+)", family: "(\w+)", secrets: \[([^\]]*)\]', block)}
+    python = {name: (family, cls.secrets) for family in families.names()
+              for name, cls in families.sources(family).items()}
+    assert declared == python

@@ -43,9 +43,20 @@ class Table:
         item = self.items.get((Key["pk"], Key["sk"]))
         return {"Item": dict(item)} if item else {}
 
-    def put_item(self, Item, ConditionExpression=None):
+    def put_item(self, Item, ConditionExpression=None, ExpressionAttributeValues=None):
         _no_floats(Item)
-        self.items[(Item["pk"], Item["sk"])] = dict(Item)
+        key = (Item["pk"], Item["sk"])
+        if ConditionExpression and not _holds(ConditionExpression, self.items.get(key, {}), {},
+                                              ExpressionAttributeValues or {}):
+            raise client_error("ConditionalCheckFailedException")
+        self.items[key] = dict(Item)
+
+    def delete_item(self, Key, ConditionExpression=None, ExpressionAttributeValues=None):
+        key = (Key["pk"], Key["sk"])
+        if ConditionExpression and not _holds(ConditionExpression, self.items.get(key, {}), {},
+                                              ExpressionAttributeValues or {}):
+            raise client_error("ConditionalCheckFailedException")
+        self.items.pop(key, None)
 
     def update_item(self, Key, UpdateExpression, ExpressionAttributeValues, ExpressionAttributeNames=None,
                     ConditionExpression=None, ReturnValues=None):
@@ -74,6 +85,9 @@ def _holds(condition: str, item: dict, names: dict, values: dict) -> bool:
 
 
 def _clause_holds(clause: str, item: dict, names: dict, values: dict) -> bool:
+    missing = re.fullmatch(r"attribute_not_exists\((\w+)\)", clause.strip())
+    if missing:
+        return missing[1] not in item
     attribute, op, rest = re.match(r"(#?\w+) (=|IN) (.+)", clause).groups()
     current = item.get(names.get(attribute, attribute))
     allowed = [values[v.strip()] for v in rest.strip("()").split(",")]
@@ -100,12 +114,25 @@ class Ecs:
         self.calls: list[dict] = []
         self.stopped: list[dict] = []
         self.failures = failures
+        # task ARN -> describe_tasks' task; a task not listed is RUNNING, one set to None is unknown to ECS.
+        self.tasks: dict[str, dict | None] = {}
+        self.launched = 0
+
+    def describe_tasks(self, cluster, tasks):
+        found = []
+        for arn in tasks:
+            task = self.tasks.get(arn, {"lastStatus": "RUNNING"})
+            if task is not None:
+                found.append({"taskArn": arn, **task})
+        return {"tasks": found, "failures": []}
 
     def run_task(self, **kwargs):
         self.calls.append(kwargs)
         if self.failures:
             return {"tasks": [], "failures": self.failures}
-        return {"tasks": [{"taskArn": "arn:aws:ecs:us-east-1:1:task/gnome-pipelines/abc123"}], "failures": []}
+        self.launched += 1
+        suffix = "" if self.launched == 1 else f"-{self.launched}"
+        return {"tasks": [{"taskArn": f"arn:aws:ecs:us-east-1:1:task/gnome-pipelines/abc123{suffix}"}], "failures": []}
 
     def stop_task(self, **kwargs):
         self.stopped.append(kwargs)

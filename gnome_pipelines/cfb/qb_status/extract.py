@@ -8,18 +8,15 @@ Whether a claim then applies on its own is autoapply's decision.
 """
 from __future__ import annotations
 
-import hashlib
-import json
 import re
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import datetime
 from typing import Callable, Protocol
 
-import anthropic
 import pandas as pd
-from botocore.exceptions import BotoCoreError, ClientError
 
 from gnome_pipelines import credentials
+from gnome_pipelines.polling.claude import ClaudeReader, ReadCache, Unavailable, cache_key
+from gnome_pipelines.polling.service import Meter
 
 RULE_CONFIDENCE = 0.6
 # Most specific first: the first phrase found in a clause decides its status
@@ -34,7 +31,6 @@ CLAUDE_MODEL = "claude-haiku-5-5"
 CLAUDE_EFFORT = "medium"                  # 35/36 on the labelled check vs 32/36 at "low"; ~$0.0002 a read
 CLAUDE_USD_PER_TOKEN = {"input": 0.10e-6, "output": 0.50e-6}
 CLAUDE_DAILY_CALLS = 3000                 # ~$0.60; past it, texts fall back to rules
-CLAUDE_CACHE = Path.home() / ".cache" / "gnome-pipelines" / "qb_status_claude.jsonl"
 CLAUDE_STATUSES = ("out", "doubtful", "questionable", "probable", "available", "game_time_decision",
                    "expected_starter", "not_starting", "left_game_injured")
 CLAUDE_HEDGES = ("confirmed", "per_sources", "expected", "unclear")
@@ -76,10 +72,6 @@ timing:
 - unclear
 
 confidence: from 0 to 1, how sure you are that you read the text correctly."""
-
-
-class NotConfigured(RuntimeError):
-    pass
 
 
 class ExtractionUnavailable(RuntimeError):
@@ -144,13 +136,9 @@ def _prompt(text: str, team: str | None, roster: dict[str, str]) -> str:
     return "\n".join(lines + ["", "Text:", "<text>", text, "</text>"])
 
 
-def _claims(response, ids: set[str]) -> list[tuple[str, str, str, float]]:
-    if response.stop_reason != "end_turn":
-        return []
-    body = next((b.text for b in response.content if b.type == "text"), None)
-    try:
-        items = json.loads(body)["claims"] if body else []
-    except (ValueError, KeyError, TypeError):
+def _claims(output: dict | None, ids: set[str]) -> list[tuple[str, str, str, float]]:
+    items = (output or {}).get("claims")
+    if not isinstance(items, list):
         return []
     out = []
     for c in items:
@@ -169,66 +157,32 @@ def _claims(response, ids: set[str]) -> list[tuple[str, str, str, float]]:
 
 
 class ClaudeExtractor:
-    """Reads each distinct text once: results are kept by a hash of the model, prompt, roster and text (never the
-    text itself) in an append-only file, so a restart doesn't pay to read the same headlines again."""
+    """Claude reads each distinct text once (polling.claude caches by a hash of the model, prompt, roster and text,
+    never the text itself), so a restart doesn't pay to read the same headlines again."""
 
     name = CLAUDE_MODEL
 
-    def __init__(self, client=None, cache_path: Path = CLAUDE_CACHE, daily_calls: int = CLAUDE_DAILY_CALLS,
+    def __init__(self, client=None, cache: ReadCache | None = None, daily_calls: int = CLAUDE_DAILY_CALLS,
                  clock: Callable[[], datetime] | None = None,
                  secret_fn: Callable[[str, str], str] = credentials.secret) -> None:
-        if client is None:
-            try:
-                key = secret_fn("anthropic", "ANTHROPIC_API_KEY")
-            except (RuntimeError, BotoCoreError, ClientError) as e:
-                raise NotConfigured(f"no Anthropic key: {e}") from e
-            client = anthropic.Anthropic(api_key=key, timeout=30.0, max_retries=2)
-        self.client, self.cache_path, self.daily_calls = client, Path(cache_path), daily_calls
-        self.clock = clock or (lambda: datetime.now(timezone.utc))
-        self.cache: dict[str, list[tuple[str, str, str, float]]] = {}
-        self.tokens = {"input": 0, "output": 0}
-        self.day = self.clock().strftime("%Y-%m-%d")
-        self.calls_today = 0
-        if self.cache_path.exists():
-            for line in self.cache_path.read_text().splitlines():
-                rec = json.loads(line)
-                self.cache[rec["key"]] = [tuple(c) for c in rec["claims"]]
-                self.calls_today += rec["at"][:10] == self.day
+        self.reader = ClaudeReader(CLAUDE_MODEL, daily_calls, cache=cache, client=client, clock=clock,
+                                   secret_fn=secret_fn, usd_per_token=CLAUDE_USD_PER_TOKEN)
 
     def usd(self) -> float:
-        return sum(n * CLAUDE_USD_PER_TOKEN[k] for k, n in self.tokens.items())
+        return self.reader.usd()
+
+    def meter(self) -> Meter:
+        return self.reader.meter()
 
     def extract(self, text: str, team_id: int, qbs: pd.DataFrame,
                 team: str | None = None) -> list[tuple[str, str, str, float]]:
         if not names_a_qb(text, qbs):
             return []
         roster = dict(zip(qbs["player_id"].astype(str), qbs["name"].astype(str)))
-        key = hashlib.sha256(json.dumps([CLAUDE_MODEL, SYSTEM, team, sorted(roster.items()), text]).encode())
-        key = key.hexdigest()
-        if key in self.cache:
-            return list(self.cache[key])
-        now = self.clock()
-        if now.strftime("%Y-%m-%d") != self.day:
-            self.day, self.calls_today = now.strftime("%Y-%m-%d"), 0
-        if self.calls_today >= self.daily_calls:
-            raise ExtractionUnavailable(f"daily cap of {self.daily_calls} reads reached")
-        self.calls_today += 1
+        key = cache_key(CLAUDE_MODEL, SYSTEM, team, sorted(roster.items()), text)
         try:
-            response = self.client.messages.create(
-                model=CLAUDE_MODEL, max_tokens=2048, system=SYSTEM,
-                messages=[{"role": "user", "content": _prompt(text, team, roster)}],
-                output_config={"effort": CLAUDE_EFFORT,
-                               "format": {"type": "json_schema", "schema": _schema(list(roster))}})
-        except anthropic.APIError as e:
-            raise ExtractionUnavailable(f"{type(e).__name__}: {e}") from e
-        claims = _claims(response, set(roster))
-        usage = getattr(response, "usage", None)
-        used = {"input": getattr(usage, "input_tokens", 0) or 0, "output": getattr(usage, "output_tokens", 0) or 0}
-        for k, n in used.items():
-            self.tokens[k] += n
-        self.cache[key] = claims
-        self.cache_path.parent.mkdir(parents=True, exist_ok=True)
-        with self.cache_path.open("a") as f:
-            f.write(json.dumps({"key": key, "claims": claims, "at": now.isoformat(), "stop": response.stop_reason,
-                                **used}) + "\n")
-        return list(claims)
+            output = self.reader.read(key, SYSTEM, _prompt(text, team, roster), _schema(list(roster)),
+                                      effort=CLAUDE_EFFORT)
+        except Unavailable as e:
+            raise ExtractionUnavailable(str(e)) from e
+        return _claims(output, set(roster))

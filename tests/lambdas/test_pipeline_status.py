@@ -47,7 +47,7 @@ def test_a_crashed_scheduled_run_is_marked_failed_and_alerted(setup):
         "action": "FIRING", "key": "PIPELINE_FAILED:cs2_prematch_predict:r1", "type": "PIPELINE_FAILED",
         "source": "ingest", "title": "Pipeline cs2_prematch_predict failed",
         "body": "ECS task stopped with exit code 137: Essential container in task exited",
-        "labels": {"pipeline": "cs2_prematch_predict", "runId": "r1", "trigger": "scheduled"},
+        "labels": {"pipeline": "cs2_prematch_predict", "runId": "r1", "trigger": "scheduled", "kind": "pipeline"},
         "stateAt": events.sent[0]["stateAt"],
     }]
 
@@ -121,3 +121,4 @@ def test_a_clean_exit_reports_nothing(setup):
     pipeline_status.handler(stopped(0), None)
 
     assert table.updates == [] and events.sent == []
+

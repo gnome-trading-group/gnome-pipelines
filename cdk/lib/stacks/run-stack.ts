@@ -13,6 +13,7 @@ import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import { Construct } from "constructs";
 import { DefaultDashboardFactory, MonitoringFacade, noopAction } from "cdk-monitoring-constructs";
 import { lookupPlatformNetwork, Stage } from "@gnome-trading-group/gnome-shared-cdk";
+import { PollingSourceConfig, SourceTask } from "../source-task";
 import { grantResearchTables } from "../research-tables";
 
 // gnome-controller's API Gateway routes /research/pipelines/* to the api function by name; manifest.py invokes sync.
@@ -31,6 +32,11 @@ const TASK_INDEX = "by-task";
 const CONTAINER_NAME = "pipeline";
 // gnome_pipelines/families/: one image and task definition each. CI pushes <family>-<sha> and <family>-latest.
 const FAMILIES = ["cs2", "cfb"];
+// Each family's SOURCES (gnome_pipelines/families/): a task definition and role each, keyed "source:<name>" for
+// tasks.py. tests/test_families.py checks this list against the Python declarations.
+export const POLLING_SOURCES: PollingSourceConfig[] = [
+  { source: "cfb_qb_status", family: "cfb", secrets: ["x", "anthropic"] },
+];
 // The registry's alerting stack names its bus, so any service can put alerts on it without depending on that stack.
 const ALERT_BUS_NAME = "gnome-alerts";
 const LAMBDA_RUNTIME = lambda.Runtime.PYTHON_3_13;
@@ -151,6 +157,11 @@ export class RunStack extends cdk.Stack {
       taskDefinitions[family] = taskDefinition;
     }
 
+    const sourceTasks = POLLING_SOURCES.map((config) => new SourceTask(this, `SourceTask-${config.source}`, {
+      config, stage: props.stage, repository, executionRole, logGroup, runsTable: table,
+      tableBucketArn: props.tableBucketArn, registryApiKeyId, containerName: CONTAINER_NAME,
+    }));
+
     const manifestArn = `arn:aws:ssm:${this.region}:${this.account}:parameter${MANIFEST_PATH}`;
     const readManifest = new iam.PolicyStatement({
       actions: ["ssm:GetParametersByPath", "ssm:GetParameter"],
@@ -178,20 +189,22 @@ export class RunStack extends cdk.Stack {
     // What tasks.py needs to start a run's task: the trigger starts runs, and the status Lambda restarts them.
     const launchEnvironment = {
       CLUSTER_ARN: cluster.clusterArn,
-      TASK_DEFINITIONS: cdk.Stack.of(this).toJsonString(
-        Object.fromEntries(Object.entries(taskDefinitions).map(([family, td]) => [family, td.taskDefinitionArn])),
-      ),
+      TASK_DEFINITIONS: cdk.Stack.of(this).toJsonString(Object.fromEntries([
+        ...Object.entries(taskDefinitions).map(([family, td]) => [family, td.taskDefinitionArn]),
+        ...sourceTasks.map((t, i) => [`source:${POLLING_SOURCES[i].source}`, t.taskDefinition.taskDefinitionArn]),
+      ])),
       SUBNET_IDS: vpc.publicSubnets.map((s) => s.subnetId).join(","),
       SECURITY_GROUP_ID: securityGroup.securityGroupId,
     };
     const grantLaunch = (f: lambda.Function) => {
       f.addToRolePolicy(new iam.PolicyStatement({
         actions: ["ecs:RunTask"],
-        resources: Object.values(taskDefinitions).map((td) => td.taskDefinitionArn),
+        resources: [...Object.values(taskDefinitions), ...sourceTasks.map((t) => t.taskDefinition)]
+          .map((td) => td.taskDefinitionArn),
       }));
       f.addToRolePolicy(new iam.PolicyStatement({
         actions: ["iam:PassRole"],
-        resources: [taskRole.roleArn, executionRole.roleArn],
+        resources: [taskRole.roleArn, executionRole.roleArn, ...sourceTasks.map((t) => t.taskRole.roleArn)],
       }));
     };
 
@@ -199,6 +212,9 @@ export class RunStack extends cdk.Stack {
       "Start a pipeline run (scheduled, or manual through the API)", launchEnvironment);
     table.grantReadWriteData(triggerFn);
     grantLaunch(triggerFn);
+    const taskArns = `arn:aws:ecs:${this.region}:${this.account}:task/${NAME}/*`;
+    // sources.py: a start that finds the source held checks whether the holder's task is gone.
+    triggerFn.addToRolePolicy(new iam.PolicyStatement({ actions: ["ecs:DescribeTasks"], resources: [taskArns] }));
 
     const scheduleGroup = new scheduler.CfnScheduleGroup(this, "ScheduleGroup", { name: NAME });
     const schedulerRole = new iam.Role(this, "SchedulerRole", {
@@ -228,8 +244,8 @@ export class RunStack extends cdk.Stack {
       resources: [schedulerRole.roleArn],
     }));
     apiFn.addToRolePolicy(new iam.PolicyStatement({
-      actions: ["ecs:StopTask"],
-      resources: [`arn:aws:ecs:${this.region}:${this.account}:task/${NAME}/*`],
+      actions: ["ecs:StopTask", "ecs:DescribeTasks"],
+      resources: [taskArns],
     }));
 
     const syncFn = fn("SyncFunction", FUNCTION_NAMES.sync, "sync_schedules",
@@ -257,12 +273,33 @@ export class RunStack extends cdk.Stack {
       resources: [manifestArn, `${manifestArn}/*`],
     }));
     syncFn.grantInvoke(githubRole);
+    // manifest.py restart-sources: stop running source tasks so the status Lambda restarts them on the new image.
+    githubRole.addToPolicy(new iam.PolicyStatement({
+      actions: ["ecs:ListTasks"],
+      resources: ["*"],
+      conditions: { ArnEquals: { "ecs:cluster": cluster.clusterArn } },
+    }));
+    githubRole.addToPolicy(new iam.PolicyStatement({
+      actions: ["ecs:StopTask"],
+      resources: [`arn:aws:ecs:${this.region}:${this.account}:task/${NAME}/*`],
+    }));
 
     const statusFn = fn("StatusFunction", FUNCTION_NAMES.status, "pipeline_status",
       "Restart runs whose task failed to start, fail runs whose task stopped abnormally, and alert on failed runs",
       launchEnvironment);
     table.grantReadWriteData(statusFn);
     grantLaunch(statusFn);
+    // A source restart that was superseded, or stopped while starting, stops the task it just started; the
+    // reconcile check asks ECS whether a live source run's task is gone.
+    statusFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ["ecs:StopTask", "ecs:DescribeTasks"], resources: [taskArns],
+    }));
+    // pipeline_status.reconcile_sources: ends any source run left live with no task, so a dead source alerts.
+    new events.Rule(this, "ReconcileSourcesRule", {
+      schedule: events.Schedule.rate(cdk.Duration.minutes(5)),
+      targets: [new targets.LambdaFunction(statusFn)],
+    });
+
     statusFn.addToRolePolicy(new iam.PolicyStatement({
       actions: ["events:PutEvents"],
       resources: [`arn:aws:events:${this.region}:${this.account}:event-bus/${ALERT_BUS_NAME}`],

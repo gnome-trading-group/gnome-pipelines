@@ -5,6 +5,7 @@
     gnome-pipelines run hltv_cs2 --stage dev -p start_date=2026-10-11 -p end_date=2026-10-13 -p min_stars=0
     gnome-pipelines run cs2_upcoming --stage prod --params '{"dry_run": true}'
     gnome-pipelines sync-schema cs2_match_priors --stage dev --recreate cs2_match_priors --apply
+    gnome-pipelines serve cfb_qb_status --stage dev -p x=false
 
 --stage picks the data and the credentials together: dev and prod use the AWS profile of that name, and local
 writes to a SQLite warehouse on disk. A local run records no run item; its outputs are printed instead.
@@ -25,8 +26,9 @@ from pydantic import ValidationError
 from pydantic_core import PydanticUndefined
 
 from gnome_pipelines import families, schema_sync
-from gnome_pipelines.datasets import cfb, cs2, faceit
+from gnome_pipelines.datasets import cfb, cs2, faceit, polling
 from gnome_pipelines.environment import Stage
+from gnome_pipelines.polling.serve import serve as serve_source
 from gnome_pipelines.runner import execute
 
 DEFAULT_WAREHOUSE = Path.home() / ".cache" / "gnome-pipelines" / "warehouse"
@@ -40,17 +42,20 @@ def main() -> None:
 
 @main.command("list")
 def list_pipelines() -> None:
-    """The pipelines, with their family."""
+    """The pipelines and polling sources, with their family."""
     for family in families.names():
         for name in sorted(families.pipelines(family)):
             click.echo(f"{name} ({family})")
+        for name in sorted(families.sources(family)):
+            click.echo(f"{name} ({family}, polling source: `serve` it)")
 
 
 @main.command()
 @click.argument("pipeline")
 def describe(pipeline: str) -> None:
-    """PIPELINE's parameters: type, default and what each is for."""
-    fields = _pipeline(pipeline).params_type.model_fields
+    """PIPELINE's (or a polling source's) parameters: type, default and what each is for."""
+    sources = families.available_sources()
+    fields = (sources[pipeline] if pipeline in sources else _pipeline(pipeline)).params_type.model_fields
     if not fields:
         click.echo("no parameters")
     for name, info in fields.items():
@@ -90,6 +95,33 @@ def run(pipeline: str, stage: str, param_pairs: tuple[str, ...], params_json: st
     click.echo(json.dumps(result.outputs, indent=2, default=str))
 
 
+@main.command()
+@click.argument("source")
+@click.option("--stage", required=True, type=click.Choice([s.value for s in Stage]),
+              help="whose data, and with it the AWS profile: local, dev or prod")
+@click.option("-p", "--param", "param_pairs", multiple=True, metavar="KEY=VALUE", help="a source parameter")
+@click.option("--params", "params_json", default="{}", help="parameters as one JSON object; -p values override it")
+@click.option("--warehouse", type=click.Path(path_type=Path), default=DEFAULT_WAREHOUSE, show_default=True,
+              help="the warehouse for --stage local")
+@click.option("--yes", is_flag=True, help="don't ask before writing to prod")
+def serve(source: str, stage: str, param_pairs: tuple[str, ...], params_json: str, warehouse: Path, yes: bool) -> None:
+    """Serve polling SOURCE here until Ctrl-C, through the same serve() its run's task uses."""
+    available = families.available_sources()
+    if source not in available:
+        raise click.BadParameter(f"not one of {', '.join(sorted(available))}", param_hint="SOURCE")
+    params = {**json.loads(params_json), **dict(_param(p) for p in param_pairs)}
+    try:
+        available[source].params_type.model_validate(params)
+    except ValidationError as e:
+        raise click.UsageError(f"{source} parameters:\n{e}") from None
+    stage = Stage(stage)
+    if stage is Stage.PROD and not yes:
+        click.confirm(f"Serve {source} against prod data? The prod service may already be running it.", abort=True)
+    os.environ.update(_run_environment(stage, warehouse), PIPELINE_NAME=source)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    serve_source(source, params)
+
+
 @main.command(name="sync-schema")
 @click.argument("tables", nargs=-1, required=True)
 @click.option("--stage", required=True, type=click.Choice([s.value for s in Stage]), help="whose tables: local, dev or prod")
@@ -103,7 +135,7 @@ def run(pipeline: str, stage: str, param_pairs: tuple[str, ...], params_json: st
 def sync_schema(tables: tuple[str, ...], stage: str, drop_removed: bool, recreate: tuple[str, ...], do_apply: bool,
                 warehouse: Path, yes: bool) -> None:
     """Bring TABLES in line with their specs: add new columns; delete dropped ones or recreate, only when asked."""
-    specs = {spec.name: spec for spec in (*cs2.ALL, *faceit.ALL, *cfb.ALL)}
+    specs = {spec.name: spec for spec in (*cs2.ALL, *faceit.ALL, *cfb.ALL, *polling.ALL)}
     unknown = [t for t in (*tables, *recreate) if t not in specs]
     if unknown:
         raise click.BadParameter(f"no dataset spec named {', '.join(unknown)}", param_hint="TABLES")

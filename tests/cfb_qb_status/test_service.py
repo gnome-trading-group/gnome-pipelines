@@ -6,7 +6,7 @@ from gnomepy.data import CatalogConfig, DatasetStore
 
 from gnome_pipelines.cfb.qb_status.evidence import Evidence
 from gnome_pipelines.cfb.qb_status.health import kickoff_accuracy, news_lag_rows, report_lag_rows
-from gnome_pipelines.cfb.qb_status.service import Service, Task
+from gnome_pipelines.cfb.qb_status.service import Context
 from gnome_pipelines.cfb.qb_status.store import StatusStore
 
 T0 = datetime(2026, 10, 22, 0, 0, tzinfo=timezone.utc)
@@ -47,56 +47,14 @@ def test_a_new_rule_version_republishes_unchanged_numbers(tmp_path):
     assert s.snapshots()["rule_version"].tolist() == ["v2"]
 
 
-class Clock:
-    def __init__(self, t):
-        self.t = t
-
-    def __call__(self):
-        return self.t
-
-
-def test_failing_task_records_health_and_others_run(tmp_path):
-    s = store(tmp_path)
-    ran = []
-
-    def boom(now):
-        raise ValueError("feed down")
-
-    def ok(now):
-        ran.append(now)
-        return [ev("x", at=now)]
-    svc = Service([Task("bad", lambda now: 60, boom), Task("good", lambda now: 60, ok)], s)
-    svc.step(T0)
-    assert ran == [T0]
-    h = s.health()
-    assert list(h["kind"]) == ["source_error"] and "bad: ValueError: feed down" in h["detail"].iloc[0]
-
-
-def test_sleep_gap_records_gap_and_runs_all_tasks_with_wake_time(tmp_path):
-    s = store(tmp_path)
-    seen = []
-
-    def report(now):
-        seen.append(now)
-        return [ev(f"r{len(seen)}", at=now)]
-    svc = Service([Task("reports", lambda now: 1800, report), Task("espn", lambda now: 30, lambda now: [])], s)
-    svc.step(T0)
-    wake = T0 + timedelta(hours=5)
-    svc.step(wake)
-    assert seen == [T0, wake]
-    h = s.health()
-    gap = h[h["kind"] == "gap"]
-    assert len(gap) == 1 and gap["value"].iloc[0] == 5 * 3600
-    assert pd.Timestamp(s.evidence().set_index("evidence_id").loc["r2", "first_seen_at"]) == pd.Timestamp(wake)
-
-
-def test_new_evidence_triggers_snapshot_for_that_team_only(tmp_path):
-    s = store(tmp_path)
+def test_new_evidence_recomputes_only_the_teams_it_names():
     calls = []
-    svc = Service([Task("t", lambda now: 60, lambda now: [ev("a", team_id=344)])], s,
-                  recompute=lambda teams, new, now: calls.append(set(teams)))
-    svc.step(T0)
-    svc.step(T0 + timedelta(seconds=61))
+
+    class Ctx:
+        def recompute(self, teams, new, now):
+            calls.append(set(teams))
+    Context.on_new(Ctx(), [ev("a", team_id=344), ev("b", team_id=None)], T0)
+    Context.on_new(Ctx(), [ev("c", team_id=None)], T0)
     assert calls == [{344}]
 
 
@@ -182,54 +140,6 @@ def test_news_lag_rows_measure_publish_to_capture():
     assert news_lag_rows([e], changed_teams=set()) == []
 
 
-class SteppingClock:
-    def __init__(self, t):
-        self.t = t
-
-    def __call__(self):
-        return self.t
-
-
-def test_clock_jump_inside_a_task_restamps_and_records_gap(tmp_path):
-    s = store(tmp_path)
-    clock = SteppingClock(T0)
-
-    def sleepy(now):
-        clock.t = now + timedelta(hours=8)
-        return [ev("late", at=now)]
-    svc = Service([Task("reports", lambda now: 1800, sleepy)], s, clock=clock)
-    svc.step(T0)
-    stamped = pd.Timestamp(s.evidence().set_index("evidence_id").loc["late", "first_seen_at"])
-    assert stamped == pd.Timestamp(T0 + timedelta(hours=8))
-    gap = s.health()
-    assert list(gap["kind"]) == ["gap"] and gap["value"].iloc[0] == 8 * 3600
-
-
-def test_failed_task_retries_soon_with_backoff(tmp_path):
-    s = store(tmp_path)
-    runs = []
-
-    def flaky(now):
-        runs.append(now)
-        raise ConnectionError("offline")
-    svc = Service([Task("reports", lambda now: 1800, flaky)], s)
-    svc.step(T0)
-    svc.step(T0 + timedelta(seconds=16))
-    svc.step(T0 + timedelta(seconds=30))
-    svc.step(T0 + timedelta(seconds=47))
-    assert runs == [T0, T0 + timedelta(seconds=16), T0 + timedelta(seconds=47)]
-
-
-def test_recompute_error_is_recorded_not_raised(tmp_path):
-    s = store(tmp_path)
-
-    def broken(teams, new, now):
-        raise KeyError("missing column")
-    svc = Service([Task("t", lambda now: 60, lambda now: [ev("a")])], s, recompute=broken)
-    svc.step(T0)
-    assert "recompute: KeyError" in s.health()["detail"].iloc[0]
-
-
 def test_sources_round_trip_and_republish_only_changes(tmp_path):
     from gnome_pipelines.cfb.qb_status.x_scan import registry_frame
     s = store(tmp_path)
@@ -239,15 +149,6 @@ def test_sources_round_trip_and_republish_only_changes(tmp_path):
     s.put_sources(df.assign(added_at=pd.Timestamp(T0 + timedelta(days=1))))
     got = s.sources()
     assert got["handle"].tolist() == ["TestvilleBeat"] and list(got["teams"].iloc[0]) == ["Testville State"]
-
-
-def test_run_until_stops_at_the_deadline(tmp_path):
-    t, runs = [T0], []
-    svc = Service([Task("a", lambda now: 10.0, lambda now: runs.append(now) or [])], store(tmp_path),
-                  clock=lambda: t[0], sleep=lambda s: t.__setitem__(0, t[0] + timedelta(seconds=s)))
-    svc.run_until(T0 + timedelta(seconds=30))
-    assert runs == [T0, T0 + timedelta(seconds=10), T0 + timedelta(seconds=20)]
-    assert t[0] == T0 + timedelta(seconds=30)
 
 
 def test_copy_tables_replays_every_version_with_its_original_time(tmp_path):

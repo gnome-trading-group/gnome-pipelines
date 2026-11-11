@@ -11,6 +11,10 @@ from gnome_pipelines.cfb.qb_status.market_alarm import Alarm
 from gnome_pipelines.cfb.qb_status.review import decide
 from gnome_pipelines.cfb.qb_status.service import (Context, build_service, fbs_games, fresh_alarms, resolve_flags)
 from gnome_pipelines.cfb.qb_status.store import StatusStore
+from gnome_pipelines.cfb.qb_status.state_store import LocalObjects
+from gnome_pipelines.polling.claude import NotConfigured
+from gnome_pipelines.polling.health import PollHealth
+from gnome_pipelines.polling.service import Meter
 
 T0 = datetime(2026, 10, 24, 20, 0, tzinfo=timezone.utc)
 ROSTERS = pd.DataFrame([
@@ -52,8 +56,12 @@ def test_fresh_alarms_fire_once_per_move():
     assert (len(a), len(b), len(c)) == (1, 0, 1)
 
 
+HEALTH = PollHealth("cfb_qb_status", publish=lambda df: None)
+
+
 class FakeCtx:
-    status = None
+    status = type("Status", (), {"add_evidence_new": staticmethod(lambda found: found)})()
+    x_budget = None
 
     def __init__(self, watched):
         self._watched = watched
@@ -66,7 +74,7 @@ class FakeCtx:
 
 
 def test_watched_news_rotation_runs_every_ten_minutes_per_team():
-    svc = build_service(FakeCtx(2), espn=False, market=False)
+    svc = build_service(FakeCtx(2), HEALTH, espn=False, market=False)
     tasks = {t.name: t for t in svc.tasks}
     assert {"news_watched", "news_sweep", "manual"} <= set(tasks)
     assert Context.news_watched_interval(FakeCtx(2), T0) == pytest.approx(300.0)
@@ -171,7 +179,7 @@ def x_context(tmp_path, posts=None, monthly_usd=25.0, extractor=None):
     fake = FakeX(posts)
     x = XSource(transport=fake, secret_fn=lambda *a: "token")
     ctx = Context(ResearchWithPlays(fail=False), status, 2026, cache_dir=tmp_path / "cache", x=x,
-                  x_budget=XBudget(tmp_path / "x.json", monthly_usd=monthly_usd), extractor=extractor)
+                  x_budget=XBudget(LocalObjects(tmp_path / "state"), monthly_usd=monthly_usd), extractor=extractor)
     return ctx, fake, status
 
 
@@ -217,7 +225,7 @@ def test_an_alarm_queues_one_relevancy_lookback_per_team(tmp_path):
 def test_without_x_the_service_builds_no_x_tasks(tmp_path):
     status = StatusStore(DatasetStore(CatalogConfig(local_warehouse=tmp_path / "wh")))
     ctx = Context(ResearchWithPlays(fail=False), status, 2026, cache_dir=tmp_path / "cache")
-    names = {t.name for t in build_service(ctx, espn=False, market=False, news=False).tasks}
+    names = {t.name for t in build_service(ctx, HEALTH, espn=False, market=False, news=False).tasks}
     assert not any(n.startswith("x_") for n in names)
 
 
@@ -287,40 +295,25 @@ def test_a_headline_that_matches_the_official_report_applies(tmp_path):
     assert [(e.source_type, e.review_state, e.reviewer) for e in ev] == [("news", "auto", "auto:official")]
 
 
-def test_the_hourly_refresh_records_what_the_model_has_cost(tmp_path):
+def test_the_model_and_x_spend_are_metered(tmp_path):
     class Priced(FakeReader):
-        def usd(self):
-            return 0.0123
-    ctx, _, status = x_context(tmp_path, extractor=Priced())
-    ctx.refresh_run(T0)
-    spend = status.health().set_index("kind").loc["claude_spend"]
-    assert spend["value"] == pytest.approx(0.0123) and "claude-haiku-5-5" in spend["detail"]
-
-
-def test_given_a_mirror_the_service_pushes_its_state_every_minute(tmp_path):
-    class Mirror:
-        pushes = 0
-
-        def push(self):
-            Mirror.pushes += 1
-            return 0
-    status = StatusStore(DatasetStore(CatalogConfig(local_warehouse=tmp_path / "wh")))
-    ctx = Context(ResearchWithPlays(fail=False), status, 2026, cache_dir=tmp_path / "cache")
-    task = next(t for t in build_service(ctx, espn=False, market=False, news=False, mirror=Mirror()).tasks
-                if t.name == "state_push")
-    assert task.interval(T0) == 60.0 and task.run(T0) == [] and Mirror.pushes == 1
+        def meter(self):
+            return Meter("claude:claude-haiku-5-5", lambda: 0.0123)
+    ctx, _, _ = x_context(tmp_path, extractor=Priced())
+    got = {m.name: (m.usd(), m.basis) for m in ctx.meters()}
+    assert got == {"claude:claude-haiku-5-5": (0.0123, "since start"), "x": (0.0, "month to date")}
 
 
 def test_service_context_reads_with_rules_when_claude_has_no_key(tmp_path, monkeypatch):
     from gnome_pipelines.cfb.qb_status import service
-    from gnome_pipelines.cfb.qb_status.extract import NotConfigured
 
     def no_key(*a, **k):
         raise NotConfigured("no key")
     monkeypatch.setattr(service, "ClaudeExtractor", no_key)
     said = []
     status = StatusStore(DatasetStore(CatalogConfig(local_warehouse=tmp_path / "wh")))
-    ctx = service.service_context(ResearchWithPlays(fail=False), status, 2026, use_x=False, use_claude=True,
+    ctx = service.service_context(ResearchWithPlays(fail=False), status, 2026, LocalObjects(tmp_path / "state"),
+                                  use_x=False, use_claude=True,
                                   say=said.append, cache_dir=tmp_path / "cache")
     assert ctx.extractor.name == "rules" and ctx.x is None and any("Claude is off" in s for s in said)
 
@@ -452,6 +445,17 @@ def test_service_context_sets_the_x_budget_from_its_caps(tmp_path, monkeypatch):
     monkeypatch.setenv("X_BEARER_TOKEN", "token")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     status = StatusStore(DatasetStore(CatalogConfig(local_warehouse=tmp_path / "wh")))
-    ctx = service_context(Research(fail=False), status, 2026, use_claude=False, say=lambda s: None,
-                          cache_dir=tmp_path / "cache", x_state=tmp_path / "x.json", x_monthly_usd=60.0, x_daily_usd=3.0)
+    ctx = service_context(Research(fail=False), status, 2026, LocalObjects(tmp_path / "state"), use_claude=False,
+                          say=lambda s: None,
+                          cache_dir=tmp_path / "cache", x_monthly_usd=60.0, x_daily_usd=3.0)
     assert (ctx.x_budget.cap, ctx.x_budget.daily_cap) == (12000, 600)
+
+
+def test_with_x_on_the_budget_is_flushed_every_five_seconds_in_the_qb_lane_and_on_stop(tmp_path):
+    ctx, _, _ = x_context(tmp_path)
+    svc = build_service(ctx, HEALTH, espn=False, market=False, news=False)
+    flush = next(t for t in svc.tasks if t.name == "x_budget_flush")
+    assert flush.interval(T0) == 5.0 and flush.lane == "qb_status"
+    ctx.x_budget.charge(3, T0)
+    assert flush.run(T0) == [] and not ctx.x_budget.pending_month
+    assert svc.on_stop == ctx.x_budget.flush

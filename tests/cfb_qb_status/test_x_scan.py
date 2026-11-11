@@ -1,10 +1,13 @@
+import json
 from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 import pytest
 
-from gnome_pipelines.cfb.qb_status.x_scan import (QUERY_LIMIT, Registry, XBudget, lookback_query, posts_to_evidence,
-                                                   registry_frame, sweep_queries, watch_queries)
+from gnome_pipelines.cfb.qb_status.state_store import LocalObjects
+from gnome_pipelines.cfb.qb_status.x_scan import (QUERY_LIMIT, X_STATE_KEY, Registry, XBudget, _merge,
+                                                   lookback_query, posts_to_evidence, registry_frame, sweep_queries,
+                                                   watch_queries)
 from gnome_pipelines.cfb.qb_status.x_source import XSource
 from gnome_pipelines.datasets.qb_status import SOURCES
 
@@ -84,7 +87,7 @@ def test_lookback_searches_anyone_by_full_name():
 
 
 def test_budget_stops_sweeps_at_80_percent_and_everything_at_the_cap(tmp_path):
-    b = XBudget(tmp_path / "x.json", monthly_usd=1.0)        # 200 posts
+    b = XBudget(LocalObjects(tmp_path), monthly_usd=1.0)        # 200 posts
     b.charge(159, T0)
     assert b.allow("sweep", T0) and b.allow("watch", T0)
     b.charge(1, T0)
@@ -93,25 +96,80 @@ def test_budget_stops_sweeps_at_80_percent_and_everything_at_the_cap(tmp_path):
     assert not b.allow("watch", T0) and not b.allow("lookback", T0)
 
 
-def test_budget_persists_and_resets_each_month(tmp_path):
-    b = XBudget(tmp_path / "x.json", monthly_usd=1.0)
+def test_budget_persists_once_flushed_and_resets_each_month(tmp_path):
+    b = XBudget(LocalObjects(tmp_path), monthly_usd=1.0)
     b.charge(200, T0)
-    assert not XBudget(tmp_path / "x.json", monthly_usd=1.0).allow("watch", T0)
-    assert XBudget(tmp_path / "x.json", monthly_usd=1.0).allow("watch", datetime(2026, 11, 1, 0, 1, tzinfo=timezone.utc))
+    assert XBudget(LocalObjects(tmp_path), monthly_usd=1.0).allow("watch", T0), "not stored until flushed"
+    assert b.flush(T0) and not b.flush(T0)
+    assert not XBudget(LocalObjects(tmp_path), monthly_usd=1.0).allow("watch", T0)
+    assert XBudget(LocalObjects(tmp_path), monthly_usd=1.0).allow("watch", datetime(2026, 11, 1, 0, 1, tzinfo=timezone.utc))
 
 
 def test_budget_flags_an_expensive_day(tmp_path):
-    b = XBudget(tmp_path / "x.json", monthly_usd=25.0, daily_alert_usd=1.5)
+    b = XBudget(LocalObjects(tmp_path), monthly_usd=25.0, daily_alert_usd=1.5)
     assert b.charge(299, T0) is False
     assert b.charge(2, T0) is True                           # crosses $1.50 once
     assert b.charge(5, T0) is False
 
 
 def test_since_ids_persist_per_query(tmp_path):
-    b = XBudget(tmp_path / "x.json")
+    b = XBudget(LocalObjects(tmp_path))
     b.set_since("sweep:a", "123")
-    assert XBudget(tmp_path / "x.json").since("sweep:a") == "123"
-    assert XBudget(tmp_path / "x.json").since("sweep:b") is None
+    assert b.since("sweep:a") == "123"
+    b.flush(T0)
+    assert XBudget(LocalObjects(tmp_path)).since("sweep:a") == "123"
+    assert XBudget(LocalObjects(tmp_path)).since("sweep:b") is None
+
+
+class Racing(LocalObjects):
+    """Another writer lands between our read and our write, a set number of times."""
+
+    def __init__(self, root, races, other):
+        super().__init__(root)
+        self.races, self.other = races, other
+
+    def put(self, key, data, if_match=None, if_absent=False):
+        if self.races:
+            self.races -= 1
+            self.other()
+        return super().put(key, data, if_match=if_match, if_absent=if_absent)
+
+
+def test_a_flush_adds_to_what_another_writer_stored_and_keeps_the_newest_since_id(tmp_path):
+    other = XBudget(LocalObjects(tmp_path), monthly_usd=25.0)
+
+    def other_writes():
+        other.charge(30, T0)
+        other.set_since("sweep:a", "500")
+        other.flush(T0)
+    mine = XBudget(Racing(tmp_path, 1, other_writes), monthly_usd=25.0)
+    mine.charge(10, T0)
+    mine.set_since("sweep:a", "400")
+    mine.set_since("sweep:b", "7")
+    assert mine.flush(T0)
+    stored = json.loads((tmp_path / X_STATE_KEY).read_text())
+    assert (stored["posts_month"], stored["posts_day"]) == (40, 40)
+    assert stored["since"] == {"sweep:a": "500", "sweep:b": "7"}
+    assert mine.spent_usd(T0) == pytest.approx(40 * 0.005)
+
+
+def test_a_flush_that_keeps_losing_the_race_raises_and_keeps_its_charges(tmp_path):
+    writes = iter(range(1, 100))
+    b = XBudget(Racing(tmp_path, 10, lambda: (tmp_path / X_STATE_KEY).write_text(json.dumps(
+        {"month": "2026-10", "posts_month": 1, "day": "2026-10-22", "posts_day": 1, "since": {"q": str(next(writes))}}))))
+    b.charge(5, T0)
+    with pytest.raises(RuntimeError, match="conflicting writes"):
+        b.flush(T0)
+    # Nothing was lost: the charge waits for the next flush.
+    assert b.pending_month == {"2026-10": 5} and b.pending_day == {"2026-10-22": 5}
+
+
+def test_a_new_month_or_day_restarts_its_count_and_stale_pending_counts_are_dropped():
+    state = {"month": "2026-10", "posts_month": 100, "day": "2026-10-31", "posts_day": 50, "since": {}}
+    merged = _merge(state, {"2026-10": 5, "2026-11": 3}, {"2026-10-31": 5, "2026-11-01": 3}, {})
+    assert (merged["month"], merged["posts_month"], merged["day"], merged["posts_day"]) == ("2026-11", 3, "2026-11-01", 3)
+    later = {"month": "2026-11", "posts_month": 9, "day": "2026-11-01", "posts_day": 9, "since": {}}
+    assert _merge(later, {"2026-10": 5}, {"2026-10-31": 5}, {})["posts_month"] == 9
 
 
 class Response:
@@ -214,7 +272,7 @@ def test_watch_asks_beat_writers_who_will_start(registry):
 
 
 def test_budget_stops_everything_for_the_day_at_the_daily_cap(tmp_path):
-    b = XBudget(tmp_path / "x.json", monthly_usd=25.0, daily_cap_usd=1.0)    # 200 posts a day
+    b = XBudget(LocalObjects(tmp_path), monthly_usd=25.0, daily_cap_usd=1.0)    # 200 posts a day
     b.charge(199, T0)
     assert b.allow("watch", T0)
     b.charge(1, T0)

@@ -8,3 +8,4 @@ from gnome_pipelines.hltv_rosters.pipeline import HltvRostersPipeline
 
 PIPELINES = (HltvCs2Pipeline, HltvRostersPipeline, FaceitDailyPipeline, FaceitBackfillPipeline, CS2E12FitPipeline,
              CS2E12BlendPipeline, CS2UpcomingPipeline)
+SOURCES = ()

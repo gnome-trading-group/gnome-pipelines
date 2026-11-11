@@ -21,14 +21,15 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Callable
 
 import pandas as pd
 
 from gnome_pipelines.cfb.qb_status.extract import RuleExtractor
+from gnome_pipelines.cfb.qb_status.state_store import Objects
 from gnome_pipelines.cfb.qb_status.evidence import Evidence
 from gnome_pipelines.cfb.qb_status.x_source import QUERY_LIMIT, SWEEP_SHARE, x_evidence
 from gnome_pipelines.datasets.qb_status import SOURCES
@@ -198,55 +199,108 @@ def post_time(post_id: str) -> datetime:
     return datetime.fromtimestamp(((int(post_id) >> 22) + X_EPOCH_MS) / 1000, tz=timezone.utc)
 
 
-class XBudget:
-    """Monthly X spend from the posts we were billed for, persisted with each query's since_id. Sweeps stop at
-    SWEEP_SHARE of the cap; watches and lookbacks may use the rest. Everything stops for the day at daily_cap_usd, so
-    one busy day can't spend the month."""
+# The object's name in the state store. It is also where the earlier daily runs left their X budget, in this format.
+X_STATE_KEY = "qb_status_x_state.json"
 
-    def __init__(self, path: Path, monthly_usd: float = MONTHLY_USD, daily_alert_usd: float = DAILY_ALERT_USD,
-                 daily_cap_usd: float = DAILY_CAP_USD) -> None:
-        self.path = Path(path)
+
+class XBudget:
+    """Monthly X spend from the posts we were billed for, kept with each query's since_id in one object in the
+    service's state store (state_store.py). Sweeps stop at SWEEP_SHARE of the cap; watches and lookbacks may use the
+    rest. Everything stops for the day at daily_cap_usd, so one busy day can't spend the month.
+
+    Charges and since_ids collect in memory and flush() merges them into the stored object every few seconds (and on
+    the way out): spend is added to what is there and since_ids take the newest, with a conditional write retried on
+    a conflict, so a second writer is merged rather than overwritten. A crash loses at most the unflushed seconds."""
+
+    FLUSH_ATTEMPTS = 5
+
+    def __init__(self, objects: Objects, key: str = X_STATE_KEY, monthly_usd: float = MONTHLY_USD,
+                 daily_alert_usd: float = DAILY_ALERT_USD, daily_cap_usd: float = DAILY_CAP_USD) -> None:
+        self.objects, self.key = objects, key
         self.cap = int(round(monthly_usd / PRICE_PER_POST))
         self.daily_alert = int(round(daily_alert_usd / PRICE_PER_POST))
         self.daily_cap = int(round(daily_cap_usd / PRICE_PER_POST))
-        self.state = {"month": "", "posts_month": 0, "day": "", "posts_day": 0, "since": {}}
-        if self.path.exists():
-            self.state.update(json.loads(self.path.read_text()))
+        # flush() may run from the shutdown path while the polling lane is still charging.
+        self._lock = threading.Lock()
+        self.stored, self.version = self._load()
+        self.pending_month: dict[str, int] = {}
+        self.pending_day: dict[str, int] = {}
+        self.pending_since: dict[str, str] = {}
 
-    def _roll(self, now: datetime) -> None:
+    def _load(self) -> tuple[dict, str | None]:
+        found = self.objects.get(self.key)
+        state = {"month": "", "posts_month": 0, "day": "", "posts_day": 0, "since": {}}
+        if found is None:
+            return state, None
+        state.update(json.loads(found[0]))
+        return state, found[1]
+
+    def _counts(self, now: datetime) -> tuple[int, int]:
         month, day = now.strftime("%Y-%m"), now.strftime("%Y-%m-%d")
-        if self.state["month"] != month:
-            self.state.update(month=month, posts_month=0)
-        if self.state["day"] != day:
-            self.state.update(day=day, posts_day=0)
-
-    def _save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(self.state))
+        stored_month = self.stored["posts_month"] if self.stored["month"] == month else 0
+        stored_day = self.stored["posts_day"] if self.stored["day"] == day else 0
+        return stored_month + self.pending_month.get(month, 0), stored_day + self.pending_day.get(day, 0)
 
     def allow(self, kind: str, now: datetime) -> bool:
-        self._roll(now)
         cap = self.cap * (SWEEP_SHARE if kind in ("sweep", "national", "gap") else 1.0)
-        return self.state["posts_month"] < cap and self.state["posts_day"] < self.daily_cap
+        with self._lock:
+            month, day = self._counts(now)
+        return month < cap and day < self.daily_cap
 
     def charge(self, n: int, now: datetime) -> bool:
         """Record n billed posts; True the first time today's spend crosses the daily alert."""
-        self._roll(now)
-        before = self.state["posts_day"]
-        self.state["posts_month"] += n
-        self.state["posts_day"] += n
-        self._save()
-        return before <= self.daily_alert < self.state["posts_day"]
+        with self._lock:
+            before = self._counts(now)[1]
+            month, day = now.strftime("%Y-%m"), now.strftime("%Y-%m-%d")
+            self.pending_month[month] = self.pending_month.get(month, 0) + n
+            self.pending_day[day] = self.pending_day.get(day, 0) + n
+            after = self._counts(now)[1]
+        return before <= self.daily_alert < after
 
-    def spent_usd(self) -> float:
-        return self.state["posts_month"] * PRICE_PER_POST
+    def spent_usd(self, now: datetime | None = None) -> float:
+        with self._lock:
+            return self._counts(now or datetime.now(timezone.utc))[0] * PRICE_PER_POST
 
     def since(self, key: str) -> str | None:
-        return self.state["since"].get(key)
+        with self._lock:
+            return self.pending_since.get(key) or self.stored["since"].get(key)
 
     def set_since(self, key: str, post_id: str) -> None:
-        self.state["since"][key] = post_id
-        self._save()
+        with self._lock:
+            self.pending_since[key] = post_id
+
+    def flush(self, now: datetime | None = None) -> bool:
+        """Merge what collected since the last flush into the stored object. False when there was nothing to write."""
+        with self._lock:
+            if not (self.pending_month or self.pending_day or self.pending_since):
+                return False
+            for _ in range(self.FLUSH_ATTEMPTS):
+                state, version = self._load()
+                merged = _merge(state, self.pending_month, self.pending_day, self.pending_since)
+                data = json.dumps(merged).encode()
+                written = self.objects.put(self.key, data, if_match=version, if_absent=version is None)
+                if written is not None:
+                    self.stored, self.version = merged, written
+                    self.pending_month, self.pending_day, self.pending_since = {}, {}, {}
+                    return True
+            raise RuntimeError(f"X budget: {self.FLUSH_ATTEMPTS} conflicting writes in a row on {self.key}")
+
+
+def _merge(state: dict, months: dict[str, int], days: dict[str, int], since: dict[str, str]) -> dict:
+    """Add the pending counts to the stored ones (a newer month or day starts its count again; an older one's pending
+    count is dropped, its period being over) and keep the newest since_id per query."""
+    merged = {**state, "since": dict(state.get("since", {}))}
+    for period, counts, count_key in (("month", months, "posts_month"), ("day", days, "posts_day")):
+        for label in sorted(counts):
+            if label == merged[period]:
+                merged[count_key] += counts[label]
+            elif label > merged[period]:
+                merged[period], merged[count_key] = label, counts[label]
+    for query, post_id in since.items():
+        current = merged["since"].get(query)
+        if current is None or int(post_id) > int(current):
+            merged["since"][query] = post_id
+    return merged
 
 
 def _names_in(text: str, qbs: pd.DataFrame, full_only: bool) -> pd.DataFrame:

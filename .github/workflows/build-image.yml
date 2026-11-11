@@ -82,6 +82,13 @@ jobs:
           docker run --rm -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN -e AWS_REGION \
             --entrypoint python gnome-pipelines:$FAMILY-$SHA -m gnome_pipelines.manifest publish
 
+      # A running polling source keeps its task until stopped; stopping it makes the status Lambda start it again on
+      # the image just pushed, with the same run and parameters.
+      - name: Restart the family's running polling sources (dev)
+        run: |
+          docker run --rm -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN -e AWS_REGION \
+            --entrypoint python gnome-pipelines:$FAMILY-$SHA -m gnome_pipelines.manifest restart-sources
+
   # Waits for a reviewer on the `prod` environment (repo Settings → Environments), so a push to
   # main reaches prod's scheduled runs only once someone has seen it work in dev. It promotes the
   # exact images dev got rather than rebuilding them.
@@ -138,3 +145,9 @@ jobs:
           docker run --rm -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN -e AWS_REGION \
             --entrypoint python ${{ steps.login-ecr-dev.outputs.registry }}/gnome-pipelines:$FAMILY-$SHA \
             -m gnome_pipelines.manifest publish
+
+      - name: Restart the family's running polling sources (prod)
+        run: |
+          docker run --rm -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY -e AWS_SESSION_TOKEN -e AWS_REGION \
+            --entrypoint python ${{ steps.login-ecr-dev.outputs.registry }}/gnome-pipelines:$FAMILY-$SHA \
+            -m gnome_pipelines.manifest restart-sources

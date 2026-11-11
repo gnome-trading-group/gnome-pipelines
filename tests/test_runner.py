@@ -104,3 +104,18 @@ def test_a_run_records_the_commit_that_ran_it_and_its_outputs(monkeypatch, run_e
     item = table.items[("RUN#probe", "r1")]
     assert run_env == ["probe"]
     assert item["status"] == "SUCCEEDED" and item["code_version"] == "gnome-pipelines@abc1234" and item["outputs"] == {"n": 1}
+
+
+def test_a_polling_source_run_is_served_and_left_for_the_status_lambda(monkeypatch, run_env):
+    served = []
+    table = Table([{"pk": "RUN#probe", "sk": "r1", "status": "PENDING"}])
+    boto = _Boto(table)
+    monkeypatch.setattr(runner, "boto3", boto)
+    monkeypatch.setenv("PIPELINE_PARAMS", '{"x": false}')
+    monkeypatch.setattr(runner.families, "available_sources", lambda: {"probe": object})
+    monkeypatch.setattr(runner, "serve", lambda name, params: served.append((name, params)))
+
+    runner.main()
+
+    assert served == [("probe", {"x": False})] and run_env == []
+    assert table.items[("RUN#probe", "r1")]["status"] == "RUNNING" and boto.events.sent == []

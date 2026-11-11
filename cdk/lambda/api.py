@@ -6,6 +6,10 @@
   PUT  /research/pipelines/{name}/schedules/{schedule}         switch a schedule: {"enabled": true}
   GET  /research/pipelines/{name}/runs/{run_id}/logs           the run's latest log lines (?before=<token>)
   POST /research/pipelines/{name}/runs/{run_id}/cancel         stop a pending or running run
+  POST /research/pipelines/{name}/stop                         stop a polling source's running run
+
+A polling source (kind "source") is started like a pipeline and runs until stopped; its cancel is a stop (STOPPING,
+then STOPPED once its task has stopped), and at most one of its runs is live at a time.
 
 Pipelines and their schedules are declared in code (the manifest); only runs and a schedule's on/off
 state change at runtime.
@@ -21,6 +25,7 @@ import boto3
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
+import sources
 from cron import next_fire
 from store import SCHEDULE_GROUP, api_path, manifest, now, pipeline, public, response, run_key, schedule_name, table
 
@@ -47,6 +52,7 @@ ROUTES = [
      lambda m, e: run_logs(m["name"], m["run_id"], (e.get("queryStringParameters") or {}).get("before"))),
     ("POST", r"/research/pipelines/(?P<name>[\w-]+)/runs/(?P<run_id>[\w-]+)/cancel",
      lambda m, e: cancel_run(m["name"], m["run_id"])),
+    ("POST", r"/research/pipelines/(?P<name>[\w-]+)/stop", lambda m, e: stop_source(m["name"])),
 ]
 
 
@@ -137,6 +143,11 @@ def run_logs(name: str, run_id: str, before: str | None) -> dict:
 
 
 def cancel_run(name: str, run_id: str) -> dict:
+    if sources.is_source(table.get_item(Key=run_key(name, run_id)).get("Item")):
+        run = sources.stop(name, run_id, ecs, CLUSTER_ARN, "Stopped from the Pipelines page")
+        if run is None:
+            return response(409, {"error": f"Run {run_id} isn't running"})
+        return response(200, {"run": public(run)})
     try:
         run = table.update_item(
             Key=run_key(name, run_id),
@@ -153,6 +164,16 @@ def cancel_run(name: str, run_id: str) -> dict:
     if run.get("ecs_task_arn"):
         ecs.stop_task(cluster=CLUSTER_ARN, task=run["ecs_task_arn"], reason="Cancelled from the Pipelines page")
     return response(200, {"run": public(run)})
+
+
+def stop_source(name: str) -> dict:
+    declared = pipeline(name)
+    if declared is None or declared.get("kind") != sources.KIND:
+        return response(404, {"error": f"No polling source named '{name}'"})
+    run_id = sources.active_run(name)
+    if run_id is None:
+        return response(409, {"error": f"{name} isn't running"})
+    return cancel_run(name, run_id)
 
 
 def _schedule_states() -> dict[str, dict]:

@@ -5,6 +5,10 @@ the PIPELINES_TABLE item that the trigger Lambda created (cdk/lambda/store.py ha
 succeeds is announced on the account's default EventBridge bus (source "gnome.pipelines", detail-type
 "Pipeline Run Succeeded"), so consumers of its data - gnome-launcher's cs2 scanner - act as soon as it lands.
 `gnome-pipelines run` (cli.py) calls execute() directly and records nothing.
+
+A polling source's run is served, not executed: main() moves it to RUNNING and serves it until SIGTERM, then exits
+without touching the run. Its next state is the status Lambda's to decide from the stopped task: STOPPED when
+someone asked for the stop (STOPPING), otherwise the same run started again (a new image, a crash).
 """
 from __future__ import annotations
 
@@ -21,6 +25,7 @@ from botocore.exceptions import ClientError
 
 from gnome_pipelines import PipelineResult, families
 from gnome_pipelines.environment import environment
+from gnome_pipelines.polling.serve import serve
 from gnome_pipelines.stores import code_version
 
 logger = logging.getLogger(__name__)
@@ -88,6 +93,10 @@ def main() -> None:
 
     if not _update_run(pipeline_name, run_id, "PENDING", status="RUNNING", started_at=_now(), code_version=code_version()):
         logger.info("Run %s was cancelled before it started", run_id)
+        return
+    if pipeline_name in families.available_sources():
+        # An exception exits non-zero, which the status Lambda counts as a crash.
+        serve(pipeline_name, params)
         return
     try:
         result = execute(pipeline_name, params)

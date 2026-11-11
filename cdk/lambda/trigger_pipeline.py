@@ -3,15 +3,18 @@
 Invoked by EventBridge Scheduler ({"pipeline_name", "trigger": "scheduled", "schedule", "parameters"}) and by
 the API Lambda ({"pipeline_name", "trigger": "manual", "parameters"}). A run's parameters are its schedule's
 or the caller's, over the pipeline's own defaults.
+
+A polling source runs at most once at a time (sources.py); starting one that is already running is refused (409).
 """
 from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
 
+import sources
 from params import problems
 from store import now, pipeline, run_key, stored, table
-from tasks import launch, task_definition
+from tasks import CLUSTER_ARN, ecs, launch, task_definition
 
 
 class Rejected(Exception):
@@ -40,9 +43,11 @@ def start_run(pipeline_name: str, params: dict, trigger: str, schedule: str | No
     if found:
         raise Rejected(400, "Invalid parameters: " + "; ".join(found))
     if task_definition(declared) is None:
-        raise Rejected(500, f"No task definition for {pipeline_name}'s family {declared.get('family')!r}")
+        raise Rejected(500, f"No task definition for {pipeline_name} ({declared.get('kind', 'pipeline')}, family "
+                            f"{declared.get('family')!r})")
 
     run_id = f"{datetime.now(timezone.utc):%Y%m%dT%H%M%S}-{uuid.uuid4().hex[:8]}"
+    source = declared.get("kind") == sources.KIND
     record = {
         **run_key(pipeline_name, run_id),
         "pipeline_name": pipeline_name,
@@ -54,9 +59,20 @@ def start_run(pipeline_name: str, params: dict, trigger: str, schedule: str | No
     }
     if schedule:
         record["schedule"] = schedule
+    if source:
+        record["kind"] = sources.KIND
     table.put_item(Item=record)
+    if source:
+        # After the record: a start racing this one finds the record it claims for, so it can't take it as abandoned.
+        holder = sources.claim(pipeline_name, run_id, ecs, CLUSTER_ARN)
+        if holder is not None:
+            table.delete_item(Key=run_key(pipeline_name, run_id))
+            raise Rejected(409, f"{pipeline_name} is already running (run {holder}); stop it first")
 
-    started = launch(pipeline_name, run_id, params, declared)
+    try:
+        started = launch(pipeline_name, run_id, params, declared)
+    except Exception as e:
+        started = {"tasks": [], "failures": f"{type(e).__name__}: {e}"}
     if not started["tasks"]:
         # No task means no stopped event either, so the run would sit at PENDING forever.
         error = f"ECS didn't start the task: {started['failures']}"
@@ -66,6 +82,8 @@ def start_run(pipeline_name: str, params: dict, trigger: str, schedule: str | No
             ExpressionAttributeNames={"#s": "status"},
             ExpressionAttributeValues={":failed": "FAILED", ":ts": now(), ":err": error},
         )
+        if source:
+            sources.release(pipeline_name, run_id)
         raise RuntimeError(error)
 
     task_arn = started["tasks"][0]["taskArn"]

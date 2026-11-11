@@ -1,5 +1,6 @@
-"""CFB: the CFBD season refresh behind the cfb_* datasets and feature tables, and the QB status service."""
+"""CFB: the CFBD season refresh behind the cfb_* datasets and feature tables, and the QB status polling source."""
 from gnome_pipelines.cfb.pipeline import CfbUpdatePipeline
-from gnome_pipelines.cfb.qb_status.pipeline import QbStatusPipeline
+from gnome_pipelines.cfb.qb_status.source import QbStatusSource
 
-PIPELINES = (CfbUpdatePipeline, QbStatusPipeline)
+PIPELINES = (CfbUpdatePipeline,)
+SOURCES = (QbStatusSource,)
