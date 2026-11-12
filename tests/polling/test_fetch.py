@@ -207,9 +207,9 @@ def test_the_backoff_doubles_up_to_its_maximum(tmp_path):
             if len(session.calls) == before:
                 break
             before = len(session.calls)
-        state = f._routes[("www.nytimes.com", "zenrows", "")]
-        gaps.append(state.backoff)
-        clock.t = state.blocked_until + 1
+        held = f._held[SITE]
+        gaps.append(held.backoff)
+        clock.t = held.until + 1
     assert gaps[0] == BACKOFF_START and gaps[1] == 2 * BACKOFF_START and max(gaps) == BACKOFF_MAX
 
 
@@ -352,17 +352,90 @@ def zenrows_error(status, code, title):
 
 
 def test_zenrows_400_steps_up_at_once_and_backs_off_at_once_on_premium(tmp_path):
-    # ew.com in prod: ZenRows can't fetch it on either proxy; a 400 costs nothing but there's no point repeating it.
-    session = Session(plain=[Response(403)], basic=[zenrows_error(400, "REQS001", "Requests to this domain are forbidden")],
-                      premium=[zenrows_error(400, "REQS001", "Requests to this domain are forbidden")])
+    session = Session(basic=[zenrows_error(400, "REQS002", "Invalid request")],
+                      premium=[zenrows_error(400, "REQS002", "Invalid request")])
     f, writer, budget, _ = make(tmp_path, session)
+    f.get(SITE, via="zenrows")
+    assert session.routes() == ["zenrows", "zenrows_premium"]
+    assert f.get(SITE, via="zenrows").refused and len(session.calls) == 2, "backing off"
+    assert writer.rows[-1]["error"] == "refused: REQS002 Invalid request" and budget.spent_today() == 0
+
+
+FORBIDDEN = zenrows_error(400, "REQS001", "Requests to this domain are forbidden")
+
+
+def test_a_host_zenrows_forbids_stays_plain_and_only_its_refused_urls_wait(tmp_path):
+    # ew.com in prod: its old sitemaps refuse plain requests, ZenRows won't fetch the domain at all, and its news
+    # feed still answers plain requests.
+    feed, old = "https://ew.com/google-news-sitemap.xml", "https://ew.com/sitemap_1.xml"
+
+    class Ew(Session):
+        def get(self, url, headers=None, params=None, timeout=None):
+            route = "plain" if url != ZENROWS_API else ("zenrows_premium" if params.get("premium_proxy") else "zenrows")
+            target = params["url"] if params else url
+            self.calls.append((route, target, headers, params))
+            if route != "plain":
+                return FORBIDDEN
+            return ok(b"<urlset/>") if target == feed else Response(403)
+    session = Ew()
+    f, writer, budget, clock = make(tmp_path, session)
     for _ in range(ESCALATE_AFTER):
-        f.get(SITE, via="auto")
-    assert session.routes() == ["plain"] * ESCALATE_AFTER + ["zenrows", "zenrows_premium"]
+        f.get(old, via="auto", kind="feed")
+    assert session.routes() == ["plain"] * ESCALATE_AFTER + ["zenrows"], "REQS001: no premium try either"
+    assert f.route(feed, "auto", "feed") == "plain"
     asked = len(session.calls)
-    assert f.get(SITE, via="auto").refused and len(session.calls) == asked, "backing off"
-    assert writer.rows[-1]["error"] == "refused: REQS001 Requests to this domain are forbidden"
+    for _ in range(5):
+        assert f.get(feed, via="auto", kind="feed").ok
+        assert f.get(old, via="auto", kind="feed").refused
+    assert session.routes()[asked:] == ["plain"] * 5, "the refused sitemap waits; the feed carries on"
+    assert writer.rows[ESCALATE_AFTER]["error"] == "refused: REQS001 Requests to this domain are forbidden"
+    clock.t += RECHECK + 1
+    for _ in range(ESCALATE_AFTER):
+        f.get(old, via="auto", kind="feed")
+    assert session.routes()[-1] == "zenrows", "after RECHECK ZenRows is asked again, in case it lifted the ban"
     assert budget.spent_today() == 0
+
+
+def test_a_host_on_zenrows_that_zenrows_starts_forbidding_goes_back_to_plain_in_the_same_fetch(tmp_path):
+    session = Session(plain=[Response(403), Response(403), Response(403), ok(b"plain again")],
+                      basic=[ok(), FORBIDDEN])
+    f, _, _, _ = make(tmp_path, session)
+    assert refused_until_escalated(f, SITE).route == "zenrows"
+    page = f.get(SITE, via="auto")
+    assert (page.route, page.text) == ("plain", "plain again") and f.route(SITE, "auto") == "plain"
+    assert session.routes()[-2:] == ["zenrows", "plain"]
+
+
+def test_a_forbidding_zenrows_never_changes_a_fetch_that_must_use_zenrows(tmp_path):
+    session = Session(basic=[FORBIDDEN], premium=[FORBIDDEN])
+    f, _, _, _ = make(tmp_path, session)
+    f.get(SITE, via="zenrows")
+    assert session.routes() == ["zenrows", "zenrows_premium"] and f.route(SITE, "zenrows") == "zenrows_premium"
+
+
+def test_at_the_dearest_route_one_refused_url_waits_while_the_host_s_others_are_fetched(tmp_path):
+    other = "https://www.nytimes.com/2026/11/11/movies/y-review.html"
+
+    class OneWalled(Session):
+        def get(self, url, headers=None, params=None, timeout=None):
+            target = params["url"] if params else url
+            self.calls.append(("zenrows_premium" if params.get("premium_proxy") else "zenrows", target, headers,
+                               params))
+            return ok(b"wall") if target == SITE else ok()
+    session = OneWalled()
+    f, _, _, clock = make(tmp_path, session)
+    wall = lambda t: t != "wall"
+    for _ in range(ESCALATE_AFTER):
+        f.get(SITE, via="zenrows", valid=wall)
+    assert f.route(SITE, "zenrows") == "zenrows_premium"
+    asked = len(session.calls)
+    for _ in range(3):
+        assert f.get(SITE, via="zenrows", valid=wall).refused
+        assert f.get(other, via="zenrows", valid=wall).ok
+    assert [c[1] for c in session.calls[asked:]] == [other] * 3
+    clock.t += BACKOFF_START + 1
+    f.get(SITE, via="zenrows", valid=wall)
+    assert session.calls[-1][1] == SITE
 
 
 def test_a_zenrows_refusal_is_logged_with_zenrows_own_code(tmp_path):

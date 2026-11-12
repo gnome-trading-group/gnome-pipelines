@@ -47,9 +47,11 @@ cd cdk && npm ci && npx cdk synth
   `conditional=False`; routes cheapest first per `via` (`plain`; `zenrows` = basic proxy 1 credit then premium 10;
   `auto` = plain then both), the cheapest that works remembered per host and page `kind`: 3 refusals in a row (401/403/407,
   ZenRows' 4xx, or a 200 the caller's `valid` rejects) step up one route, a 429/5xx/402 is transient and moves
-  nothing, ZenRows' 400 (it can't fetch the site) steps up at once, a cheaper try after 6 h, a backoff (5 min
-  doubling to 1 h) when even the dearest route refuses, a pause (1 min doubling to 10) after 3 failed connections to
-  ZenRows in a row, plain as a free fallback when credits run out; a ZenRows refusal's row carries its error code; ZenRows is paid only for its 200s, within a `ZenRowsBudget` of which one host and
+  nothing, ZenRows' 400 (it can't fetch the site) steps up at once and its REQS001 (domain forbidden) keeps the host
+  plain for 6 h, a cheaper try after 6 h, a backoff of the one URL (5 min doubling to 1 h) when even the dearest route
+  refuses it (the host's other URLs carry on), a pause (1 min doubling to 10) after 3 failed connections to ZenRows
+  in a row, plain as a free fallback when credits run out; a ZenRows refusal's row carries its error code; ZenRows is
+  paid only for its 200s (a bot wall it answers with a 200 is billed), within a `ZenRowsBudget` of which one host and
   kind may take 40%; `archive=True` keeps the page gzipped under
   `s3://<research bucket>/<source>/pages/` by content hash, a `fetched_pages` row per changed page or failure). The
   framework keeps no state on disk: a source keeps what must outlive a restart in its own tables or objects, written as
@@ -58,11 +60,13 @@ cd cdk && npm ci && npx cdk synth
   starts in a stage, and it never overwrites a film the source already recorded). Lanes: `films` (Kalshi KXRT +
   Polymarket + Polymarket US every 10 min, merged by title, closed after 3 passes missing; RT slug from RT's search,
   at most 5 searches a pass), one per outlet in `outlets.py` (fast feed every 30 s, archive sitemap every 5-30 min;
-  while an outlet's feeds need ZenRows, every 5 min and 30 min instead,
+  while an outlet's feeds need ZenRows, every 5 min and 30 min instead; an index's tag, author, video and database
+  children are skipped, and one sitemap failing (a timeout) never fails the pass,
   then the queue: page fetched unconditionally and cached, read by `page.py`, classified by `classify.py`; an
   unreadable page is retried with a growing delay while its film is open; with Claude unavailable the review is
   written at once without a verdict and a second version with the verdict follows), `tomatometer` (each film closing
-  within 21 days, its RT page every 5 min). Outlets use `via="auto"`; RT pages and RT search `via="zenrows"`. Every
+  within 21 days, its RT page every 5 min while it moves (counts changed or an outlet listed a review in the last
+  6 h, restored after a restart) or closes within a day, every 30 min in its last week, else hourly). Outlets use `via="auto"`; RT pages and RT search `via="zenrows"`. Every
   fetch has a page check (`is_listing`, `is_review_page`, `is_rt_page`, the search page), so a 200 bot wall counts as
   a refusal; an RT page without counts yet is a real answer (user's decision 2026-11-11; never RT's gated review
   API). ZenRows credits spent today are read back from `poll_health` on start. Alerts (to Slack): a news feed 15 min

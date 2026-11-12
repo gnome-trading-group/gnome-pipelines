@@ -19,6 +19,10 @@ ARCHIVE_EVERY = 300.0
 FAST_EVERY = 30.0
 # Children of a sitemap index dated within this many days are the archive tier's current period.
 RECENT_DAYS = 3
+# Words in a sitemap's file name that say it lists something other than articles (tags, authors, videos, a site's
+# database pages): Nerdist's index lists ~30 of them as recently changed, each a fetch, and a timeout, per pass.
+NOT_ARTICLES = frozenset({"tag", "category", "author", "authors", "video", "videos", "image", "images", "page",
+                          "static", "listingpages", "db", "collection"})
 
 
 @dataclass(frozen=True)
@@ -80,7 +84,8 @@ OUTLETS = (
     Outlet("nyt", ("https://www.nytimes.com/sitemaps/new/news.xml.gz",), nyt, pattern=r"/movies/.*review"),
     Outlet("empire", index="https://www.empireonline.com/sitemap_index.xml"),
     Outlet("avclub", ("https://www.avclub.com/rss",), index="https://www.avclub.com/wp-content/site-maps/sitemap-index.xml"),
-    Outlet("ew", ("https://ew.com/google-news-sitemap.xml",), index="https://ew.com/sitemap.xml"),
+    # Its news feed answers plain requests; its other sitemaps refuse them, and ZenRows won't fetch ew.com at all.
+    Outlet("ew", ("https://ew.com/google-news-sitemap.xml",)),
     Outlet("slashfilm", ("https://www.slashfilm.com/feed/",), index="https://www.slashfilm.com/sitemap_index.xml"),
     Outlet("paste", index="https://www.pastemagazine.com/wp-sitemap.xml"),
     Outlet("gamesradar", ("https://www.gamesradar.com/sitemap-news.xml",), index="https://www.gamesradar.com/sitemap.xml"),
@@ -128,6 +133,13 @@ def url_date(url: str) -> tuple[datetime, bool] | None:
             if 1 <= int(m[2]) <= 12:
                 return datetime(int(m[1]), int(m[2]), day or 1), day is None
     return None
+
+
+def article_sitemaps(children: list[tuple[str, datetime | None]]) -> list[tuple[str, datetime | None]]:
+    """The children of a sitemap index that may list articles: not its tag, author, video or similar sitemaps."""
+    def words(url: str) -> set[str]:
+        return set(re.split(r"[-_.]", url.split("?")[0].rstrip("/").rsplit("/", 1)[-1].lower()))
+    return [(url, lastmod) for url, lastmod in children if not words(url) & NOT_ARTICLES]
 
 
 def recent(children: list[tuple[str, datetime | None]], now: datetime) -> list[str]:

@@ -16,8 +16,9 @@ from gnome_pipelines.rt import films as rt_films
 from gnome_pipelines.rt.outlets import Outlet
 from gnome_pipelines.datasets.polling import POLL_HEALTH
 from gnome_pipelines.rt.source import (CLAUDE_RETRY, CREDITS_METER, NOTE_AFTER, RETRY_BASE, RETRY_MAX,
-                                       SLUG_LOOKUPS_PER_PASS, ZENROWS_ARCHIVE_EVERY, ZENROWS_FEED_EVERY,
-                                       Article, RtContext, RtReviewsParams, RtReviewsSource, credits_spent_today)
+                                       SLUG_LOOKUPS_PER_PASS, TOMATOMETER_HOT_FOR, ZENROWS_ARCHIVE_EVERY,
+                                       ZENROWS_FEED_EVERY, Article, RtContext, RtReviewsParams, RtReviewsSource,
+                                       credits_spent_today)
 
 T0 = datetime(2026, 11, 11, 12, tzinfo=timezone.utc)
 REVIEW_PAGE = ('<meta property="article:published_time" content="2026-11-11T12:00:00Z"/>'
@@ -496,3 +497,87 @@ def test_a_feed_that_needs_zenrows_is_polled_every_5_minutes_and_its_archive_eve
     dated = Outlet("nyt", archive=lambda now: ["https://www.nytimes.com/sitemaps/new/sitemap-2026-11.xml.gz"])
     web.routes["www.nytimes.com"] = "zenrows"
     assert ctx.feed_every(dated, 600.0, ZENROWS_ARCHIVE_EVERY)(T0) == 1800.0
+
+
+def test_one_sitemap_timing_out_never_costs_the_pass_what_the_others_found(env):
+    _, _, _, rows = env
+    index = "https://nerdist.com/sitemap_index.xml"
+    outlet = Outlet("nerdist", index=index)
+    slow, articles, tags = ("https://nerdist.com/article-sitemap32.xml", "https://nerdist.com/article-sitemap.xml",
+                            "https://nerdist.com/post_tag-sitemap11.xml")
+    review, imax = ("https://nerdist.com/article/how-to-rob-a-bank-review/",
+                    "https://nerdist.com/article/how-to-rob-a-bank-imax-review/")
+    pages = venue_pages()
+    pages[index] = (200, sitemap([slow, articles, tags], index=True))
+    pages[slow] = (200, TimeoutError("read timed out"))
+    pages[articles] = (200, sitemap([review]))
+    web = Web(pages)
+    ctx = context(env, web, Reader(), outlets=(outlet,))
+    ctx.store_new(ctx.films_run(T0))
+    archive = ctx.archive_run(outlet)
+    found = archive(T0)
+    assert [a.url for a in found] == [review]
+    ctx.store_new(found)
+    assert tags not in [u for u, _, _ in web.calls], "a tag sitemap never lists reviews"
+    assert any(r["kind"] == "task_error" and "article-sitemap32" in r["detail"] for r in rows)
+    # The index itself timing out: the children it listed last time are read.
+    pages[index] = (200, TimeoutError("read timed out"))
+    pages[articles] = (200, sitemap([review, imax]))
+    assert [a.url for a in archive(T0)] == [imax]
+    pages[articles] = (200, TimeoutError("read timed out"))
+    with pytest.raises(RuntimeError, match="TimeoutError"):
+        archive(T0)
+
+
+def tomatometer_reads(ctx, web, start, minutes, every=5):
+    """When each film's RT page was read, over `minutes` of the lane waking every `every` minutes."""
+    reads = {}
+    for m in range(0, minutes, every):
+        web.calls.clear()
+        ctx.tomatometer_run(start + timedelta(minutes=m))
+        for url, _, _ in web.calls:
+            reads.setdefault(url.rsplit("/", 1)[-1], []).append(m)
+    return reads
+
+
+def films_closing(env, pages, closes):
+    web = Web(pages)
+    ctx = context(env, web, Reader())
+    ctx.open = {slug: rt_films.FilmState(slug, slug, T0 + close, rt_slug=slug) for slug, close in closes.items()}
+    for slug in closes:
+        pages[f"https://www.rottentomatoes.com/m/{slug}"] = (200, '"criticsScore":{"likedCount":0,"notLikedCount":0}')
+    return ctx, web
+
+
+def test_a_film_s_tomatometer_is_read_hourly_far_out_half_hourly_in_its_last_week_and_often_near_its_close(env):
+    pages = {}
+    ctx, web = films_closing(env, pages, {"far": timedelta(days=15), "week": timedelta(days=5),
+                                          "closing": timedelta(hours=20)})
+    reads = tomatometer_reads(ctx, web, T0, 120)
+    assert reads["far"] == [0, 60]
+    assert reads["week"] == [0, 30, 60, 90]
+    assert reads["closing"] == list(range(0, 120, 5))
+
+
+def test_a_film_whose_counts_move_or_whose_review_is_listed_is_read_often_for_a_while(env):
+    pages = {}
+    ctx, web = films_closing(env, pages, {"moving": timedelta(days=15), "listed": timedelta(days=15),
+                                          "quiet": timedelta(days=15)})
+    ctx.tomatometer_run(T0)
+    pages["https://www.rottentomatoes.com/m/moving"] = (200, '"criticsScore":{"likedCount":47,"notLikedCount":13}')
+    ctx.store_new([Article("u", "listed", "listed", "variety", "fast", T0, "auto", first_seen_at=T0)])
+    reads = tomatometer_reads(ctx, web, T0 + timedelta(minutes=60), 60)
+    assert reads["moving"] == [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55], "hot from its change at +60 min"
+    assert reads["listed"][:3] == [0, 5, 10] and reads["quiet"] == [0]
+    later = T0 + timedelta(minutes=60) + TOMATOMETER_HOT_FOR + timedelta(minutes=5)
+    assert tomatometer_reads(ctx, web, later, 60)["listed"] == [0], "cooled off: read hourly again"
+
+
+def test_a_film_moving_before_a_restart_is_still_read_often_after_it(env):
+    store, writer, _, _ = env
+    pages = {}
+    ctx, web = films_closing(env, pages, {"moving": timedelta(days=15)})
+    ctx.store_new([Article("u", "moving", "moving", "variety", "fast", T0, "auto", first_seen_at=T0)])
+    writer.flush()
+    again, web = films_closing(env, pages, {"moving": timedelta(days=15)})
+    assert tomatometer_reads(again, web, T0 + timedelta(hours=1), 30)["moving"] == [0, 5, 10, 15, 20, 25]

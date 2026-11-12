@@ -15,7 +15,7 @@ from gnome_pipelines.polling.fetch import ESCALATE_AFTER, Fetcher, LocalArchive,
 from gnome_pipelines.polling.health import PollHealth
 from gnome_pipelines.polling.writer import TableWriter
 from gnome_pipelines.rt.films import FilmState
-from gnome_pipelines.rt.source import RtContext, RtReviewsParams
+from gnome_pipelines.rt.source import TOMATOMETER_WEEK_EVERY, RtContext, RtReviewsParams
 
 SCORES = b'<script>"criticsScore":{"likedCount":30,"notLikedCount":3,"scorePercent":"91%"}</script>'
 WALL = b"<html>Please verify you are a human</html>"
@@ -196,10 +196,12 @@ def test_the_tomatometer_reads_a_walled_rt_page_through_premium_end_to_end(tmp_p
     ctx = RtContext(store, writer, f, None, health, RtReviewsParams(), (), datetime.now(timezone.utc))
     soon = datetime.now(timezone.utc) + timedelta(days=5)
     ctx.open = {"a-film": FilmState("a-film", "A Film", soon, rt_slug="a_film")}
+    # Each pass half an hour apart: a film closing in 5 days is read every TOMATOMETER_WEEK_EVERY.
+    passes = (datetime.now(timezone.utc) + i * TOMATOMETER_WEEK_EVERY for i in range(ESCALATE_AFTER))
     for _ in range(ESCALATE_AFTER - 1):
         with pytest.raises(RuntimeError, match="no RT film page read"):
-            ctx.tomatometer_run(datetime.now(timezone.utc))
-    (score,) = ctx.tomatometer_run(datetime.now(timezone.utc))
+            ctx.tomatometer_run(next(passes))
+    (score,) = ctx.tomatometer_run(next(passes))
     assert (score.liked, score.not_liked, score.score) == (30, 3, 91.0)
     rt = "https://www.rottentomatoes.com/m/a_film"
     assert [(u, p) for u, p, _ in zr.calls] == [(rt, "basic")] * ESCALATE_AFTER + [(rt, "premium")]
@@ -218,6 +220,6 @@ def test_an_rt_page_without_counts_yet_is_a_real_answer_and_stays_on_the_basic_p
                     datetime.now(timezone.utc))
     soon = datetime.now(timezone.utc) + timedelta(days=5)
     ctx.open = {"b-film": FilmState("b-film", "B Film", soon, rt_slug="pre_embargo")}
-    for _ in range(3 * ESCALATE_AFTER):
-        assert ctx.tomatometer_run(datetime.now(timezone.utc)) == []
+    for i in range(3 * ESCALATE_AFTER):
+        assert ctx.tomatometer_run(datetime.now(timezone.utc) + i * TOMATOMETER_WEEK_EVERY) == []
     assert {p for _, p, _ in zr.calls} == {"basic"} and budget.spent_today() == 3 * ESCALATE_AFTER

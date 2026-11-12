@@ -7,8 +7,9 @@ Lanes (run concurrently; a slow outlet or a long Claude call holds up only its o
 - one per outlet: its fast feed every 30-60 s and its archive tier every few minutes (outlets.py), each URL matching an
   open film recorded once in rt_articles and queued; then the queue, newest first: the page fetched (and kept in the
   page cache), read (page.py) and classified by Claude (classify.py), into rt_reviews.
-- tomatometer: every 5 minutes, each film closing within tomatometer_days, its public RT page through ZenRows; a row
-  in rt_scores when its counts change.
+- tomatometer: each film closing within tomatometer_days, its public RT page through ZenRows, every 5 minutes while
+  the film is moving (its counts changed, or an outlet listed a review of it, in the last few hours) or about to
+  close, every 30 minutes in its last week, else hourly; a row in rt_scores when its counts change.
 
 first_seen_at is when the source saw a thing: an article when its feed listed it, a review when its read was ready
 (when a strategy could first act on it). Discovery lag (article seen minus published) and read lag (review ready minus
@@ -43,7 +44,7 @@ from gnome_pipelines.polling.writer import TableWriter
 from gnome_pipelines.rt import classify as claude_read
 from gnome_pipelines.rt.films import FilmState, Venues, changed
 from gnome_pipelines.rt.match import child_sitemaps, decode, entries, is_listing, is_review_of, toks
-from gnome_pipelines.rt.outlets import OUTLETS, Outlet, recent
+from gnome_pipelines.rt.outlets import OUTLETS, Outlet, article_sitemaps, recent
 from gnome_pipelines.rt.page import PageFacts, facts, is_review_page
 from gnome_pipelines.rt.tomatometer import PAGE, counts, is_rt_page
 from gnome_pipelines.stores import dataset_store
@@ -55,6 +56,15 @@ CREDITS_METER = "zenrows"
 FILMS_EVERY = 600.0
 READ_EVERY = 1.0
 TOMATOMETER_EVERY = 300.0
+# A film's Tomatometer is read every TOMATOMETER_EVERY while it is moving (its counts changed, or an outlet listed a
+# review of it, within HOT_FOR) or closes within CLOSING; every WEEK_EVERY in its last WEEK; else every IDLE_EVERY.
+# Counts mostly move in a film's embargo-day wave, and reading every film every 5 minutes would spend RT's share of
+# the day's credits by midday.
+TOMATOMETER_HOT_FOR = timedelta(hours=6)
+TOMATOMETER_CLOSING = timedelta(days=1)
+TOMATOMETER_WEEK = timedelta(days=7)
+TOMATOMETER_WEEK_EVERY = timedelta(minutes=30)
+TOMATOMETER_IDLE_EVERY = timedelta(hours=1)
 # A film's RT search is retried this long after it found nothing.
 SLUG_RETRY = timedelta(hours=6)
 # A page that can't be read is tried again after RETRY_BASE, doubling to RETRY_MAX, while its film is open; a note
@@ -202,6 +212,14 @@ class RtContext:
                                                       first_seen_at=_ts(r.first_seen_at)))
         scores = _newest(_load(store, RT_SCORES.name), "film_id")
         self.scores = {r.film_id: (int(r.liked), int(r.not_liked)) for r in scores.itertuples(index=False)}
+        # Films moving before a restart stay hot after it.
+        self.hot_until: dict[str, datetime] = {}
+        for r in scores.itertuples(index=False) if len(scores) else ():
+            if r.liked + r.not_liked:
+                self._heat(r.film_id, _ts(r.first_seen_at))
+        for r in articles.itertuples(index=False) if len(articles) else ():
+            self._heat(r.film_id, _ts(r.first_seen_at))
+        self.score_read_at: dict[str, datetime] = {}
         self.index_children: dict[str, list[str]] = {}
         self.unclassified: dict[str, deque[tuple[Article, PageFacts, str | None]]] = {o.name: deque() for o in outlets}
         self.claude_retry_at: datetime | None = None
@@ -274,40 +292,61 @@ class RtContext:
             return found
         return run
 
-    def _archive_pages(self, outlet: Outlet, now: datetime) -> list[Page]:
+    def _archive_pages(self, outlet: Outlet, now: datetime) -> tuple[list[Page], list[str]]:
         """The archive tier's sitemaps that changed since their last fetch: the outlet's dated sitemaps, or its
-        index's recent children (a child that is itself an index stands for its own recent children). Each is
-        fetched once a pass; an index that hasn't changed stands for the children it listed last time."""
+        index's recent article children (a child that is itself an index stands for its own). Each is fetched once
+        a pass; an index that hasn't changed, or can't be fetched, stands for the children it listed last time. A
+        sitemap that can't be fetched (a timeout) comes back as an error beside the others' pages."""
         if outlet.archive is not None:
-            return [self._feed(outlet, url) for url in outlet.archive(now)]
-        pages = []
-        for url in self._children(outlet, outlet.index, now):
-            page = self._feed(outlet, url)
-            if page.ok and "<sitemapindex" in (text := decode(page.content)):
-                self.index_children[url] = recent(child_sitemaps(text), now)
+            return self._fetch_each(outlet, outlet.archive(now))
+        page, error = self._try_feed(outlet, outlet.index)
+        if page is not None and page.ok:
+            self.index_children[outlet.index] = _recent_children(decode(page.content), now)
+        elif outlet.index not in self.index_children and (page is None or page.status != 304):
+            raise RuntimeError(error or f"{_status(page)} from {outlet.index}")
+        pages, errors = [], [error] if error else []
+        for url in self.index_children.get(outlet.index, []):
+            page, error = self._try_feed(outlet, url)
+            if error:
+                errors.append(error)
+            elif page.ok and "<sitemapindex" in (text := decode(page.content)):
+                self.index_children[url] = _recent_children(text, now)
             if url in self.index_children and url != outlet.index:
-                pages += [self._feed(outlet, child) for child in self.index_children[url]]
+                got, failed = self._fetch_each(outlet, self.index_children[url])
+                pages, errors = pages + got, errors + failed
+            elif page is not None:
+                pages.append(page)
+        return pages, errors
+
+    def _try_feed(self, outlet: Outlet, url: str) -> tuple[Page | None, str | None]:
+        try:
+            return self._feed(outlet, url), None
+        except Exception as e:
+            return None, f"{type(e).__name__} from {url}: {e}"
+
+    def _fetch_each(self, outlet: Outlet, urls: list[str]) -> tuple[list[Page], list[str]]:
+        pages, errors = [], []
+        for url in urls:
+            page, error = self._try_feed(outlet, url)
+            if error:
+                errors.append(error)
             else:
                 pages.append(page)
-        return pages
-
-    def _children(self, outlet: Outlet, index: str, now: datetime) -> list[str]:
-        page = self._feed(outlet, index)
-        if page.ok:
-            self.index_children[index] = recent(child_sitemaps(decode(page.content)), now)
-        elif page.status != 304 and index not in self.index_children:
-            raise RuntimeError(f"{_status(page)} from {index}")
-        return self.index_children.get(index, [])
+        return pages, errors
 
     def archive_run(self, outlet: Outlet):
         def run(now: datetime) -> list[Article]:
-            found, pages = [], self._archive_pages(outlet, now)
+            found, (pages, errors) = [], self._archive_pages(outlet, now)
             for page in pages:
                 if page.ok:
                     found += self._match(outlet, "archive", entries(decode(page.content)))
-            failed = [p for p in pages if not p.ok and p.status != 304]
-            if failed and len(failed) == len(pages):
-                raise RuntimeError("; ".join(f"{_status(p)} from {p.url}" for p in failed[:3]))
+            failed = [f"{_status(p)} from {p.url}" for p in pages if not p.ok and p.status != 304] + errors
+            if failed and len(failed) == len(pages) + len(errors):
+                raise RuntimeError("; ".join(failed[:3]))
+            for why in errors:
+                # One slow sitemap among many: what the others found still counts, and the failure is on record.
+                self.health.record("task_error", now, f"{outlet.name}.archive: {why}",
+                                   subject=f"{outlet.name}.archive")
             return found
         return run
 
@@ -388,17 +427,38 @@ class RtContext:
         raise RuntimeError(f"{article.url}: {why} (attempt {article.attempts}; again in {delay})")
 
     # --- tomatometer --------------------------------------------------------------------------------------------
+    def _heat(self, film_id: str, at: datetime | None) -> None:
+        if at is not None:
+            self.hot_until[film_id] = max(self.hot_until.get(film_id, at), at + TOMATOMETER_HOT_FOR)
+
+    def tomatometer_every(self, film: FilmState, now: datetime) -> timedelta:
+        until_close = film.close - now if film.close is not None else None
+        hot = self.hot_until.get(film.film_id)
+        if (hot is not None and hot > now) or (until_close is not None and until_close <= TOMATOMETER_CLOSING):
+            return timedelta(seconds=TOMATOMETER_EVERY)
+        if until_close is not None and until_close <= TOMATOMETER_WEEK:
+            return TOMATOMETER_WEEK_EVERY
+        return TOMATOMETER_IDLE_EVERY
+
+    def _tomatometer_due(self, film: FilmState, now: datetime) -> bool:
+        last = self.score_read_at.get(film.film_id)
+        # Half a lane interval early is on time: the lane wakes every TOMATOMETER_EVERY, a little late each time.
+        return last is None or now - last >= self.tomatometer_every(film, now) - timedelta(
+            seconds=TOMATOMETER_EVERY / 2)
+
     def tomatometer_run(self, now: datetime) -> list[Score]:
         found, tried, failed = [], 0, []
         horizon = now + timedelta(days=self.params.tomatometer_days)
         for f in list(self.open.values()):
-            if not f.rt_slug or (f.close is not None and f.close > horizon):
+            if not f.rt_slug or (f.close is not None and f.close > horizon) or not self._tomatometer_due(f, now):
                 continue
             tried += 1
+            self.score_read_at[f.film_id] = now
             # A 200 that isn't an RT film page is a bot wall: refused, so the route steps up. An RT page without
             # counts (no reviews yet) is a real answer and moves nothing.
+            # Not conditional: a 304 has no counts to read.
             page = self.fetcher.get(PAGE.format(slug=f.rt_slug), via="zenrows", archive=True, valid=is_rt_page,
-                                    kind="page")
+                                    kind="page", conditional=False)
             c = counts(page.text) if page.ok else None
             if not page.ok:
                 failed.append(f"{_status(page)} for {f.rt_slug}")
@@ -409,7 +469,10 @@ class RtContext:
                                        subject=f.film_id)
                 continue
             self.no_score.discard(f.film_id)
-            if self.scores.get(f.film_id) != (c.liked, c.not_liked):
+            before = self.scores.get(f.film_id)
+            if before != (c.liked, c.not_liked):
+                if before is not None or c.liked + c.not_liked:
+                    self._heat(f.film_id, now)
                 self.scores[f.film_id] = (c.liked, c.not_liked)
                 found.append(Score(f.film_id, f.rt_slug, c.liked, c.not_liked, c.score, page.archive_key))
         if tried and len(failed) == tried:
@@ -463,6 +526,7 @@ class RtContext:
                     continue
                 self.seen.add(r.url)
                 self.writer.add(RT_ARTICLES, [r.row()])
+                self._heat(r.film_id, r.first_seen_at)
                 # An archive entry without a date is old more often than not: it waits behind dated new ones.
                 backlog = (r.feed_published_at < self.started - BACKLOG if r.feed_published_at is not None
                            else r.feed == "archive")
@@ -494,6 +558,10 @@ def _status(page: Page) -> str:
         return ("skipped: connections to ZenRows keep failing, backing off" if page.transient
                 else "skipped: the host refuses every route, backing off")
     return f"HTTP {page.status}{' (refused)' if page.refused else ''}{' (transient)' if page.transient else ''}"
+
+
+def _recent_children(index: str, now: datetime) -> list[str]:
+    return recent(article_sitemaps(child_sitemaps(index)), now)
 
 
 def credits_spent_today(store: DatasetStore, now: datetime) -> int:

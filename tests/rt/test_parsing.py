@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from gnome_pipelines.rt.films import (MISSES_TO_CLOSE, FilmState, changed, kalshi, merge, polymarket,
                                       rt_slug_from_search)
 from gnome_pipelines.rt.match import child_sitemaps, decode, entries, film_id, is_review_of
-from gnome_pipelines.rt.outlets import recent, url_date
+from gnome_pipelines.rt.outlets import article_sitemaps, recent, url_date
 from gnome_pipelines.rt.page import facts
 from gnome_pipelines.rt.tomatometer import counts
 
@@ -41,6 +41,19 @@ def test_an_index_s_recent_children_are_its_current_period():
     <sitemap><loc>https://a.com/posts-old.xml</loc><lastmod>2025-01-01</lastmod></sitemap></sitemapindex>"""
     assert recent(child_sitemaps(index), T0) == ["https://a.com/sitemap-2026-11.xml", "https://a.com/posts-recent.xml"]
     assert url_date("https://www.thewrap.com/sitemap.xml?yyyy=2026&mm=11&dd=11") == (datetime(2026, 11, 11), False)
+
+
+def test_an_index_s_tag_author_video_and_database_sitemaps_are_left_out():
+    children = ["https://nerdist.com/article-sitemap32.xml", "https://nerdist.com/post_tag-sitemap11.xml",
+                "https://nerdist.com/video-sitemap-3.xml", "https://nerdist.com/category-sitemap.xml",
+                "https://screenrant.com/sitemap-2026-11-part1-articles.xml", "https://screenrant.com/sitemap-db-movie-part9.xml",
+                "https://screenrant.com/sitemap-authors-part1.xml", "https://mashable.com/sitemap-entertainment-0.xml",
+                "https://mashable.com/sitemap-video-files-31.xml", "https://www.denofgeek.com/page-sitemap.xml",
+                "https://www.austinchronicle.com/newspack_collection_section-sitemap.xml",
+                "https://www.thewrap.com/sitemap.xml?yyyy=2026&mm=11&dd=11"]
+    assert [u for u, _ in article_sitemaps([(u, None) for u in children])] == [
+        "https://nerdist.com/article-sitemap32.xml", "https://screenrant.com/sitemap-2026-11-part1-articles.xml",
+        "https://mashable.com/sitemap-entertainment-0.xml", "https://www.thewrap.com/sitemap.xml?yyyy=2026&mm=11&dd=11"]
 
 
 def test_films_from_all_three_venues_merge_by_title():
