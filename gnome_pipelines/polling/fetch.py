@@ -8,8 +8,7 @@
   the fetcher remembers the cheapest route that works: ESCALATE_AFTER refusals in a row (a 401/403/407, ZenRows' own
   4xx, or a 200 the caller's `valid` rejects) move it up one route; a 429 or 5xx is transient and moves nothing;
   after RECHECK it tries one route cheaper again. When even the dearest route refuses a URL, that URL stops being
-  asked for a backoff (BACKOFF_START doubling to BACKOFF_MAX, or the caller's backoff_max) instead of paying every
-  poll; the host's other URLs
+  asked for a backoff (BACKOFF_START doubling to BACKOFF_MAX) instead of paying every poll; the host's other URLs
   carry on, since a site may refuse its old sitemaps and still answer its news feed. ZenRows' 400 says it can't fetch
   the site at all, so it steps up (or backs off) at once rather than after ESCALATE_AFTER; its REQS001 ("requests to
   this domain are forbidden") takes ZenRows off that host for RECHECK, so the host's fetches stay plain rather than
@@ -251,8 +250,7 @@ class Fetcher:
         return self._routes_for(via, host)[state.level if state else 0]
 
     def get(self, url: str, via: str = "plain", archive: bool = False,
-            valid: Callable[[str], bool] | None = None, kind: str = "", conditional: bool = True,
-            backoff_max: float = BACKOFF_MAX) -> Page:
+            valid: Callable[[str], bool] | None = None, kind: str = "", conditional: bool = True) -> Page:
         """The page now, through the cheapest route `via` allows that works for this host and `kind` (a site may
         answer its feed plainly but not its articles). A refusal comes back refused (and moves the host up a route
         once there have been ESCALATE_AFTER in a row, or holds the URL back when no dearer route is left); a 429 or
@@ -315,7 +313,7 @@ class Fetcher:
                     if not tried_plain:
                         continue
                     # This fetch's plain try was refused too, and plain is now the only route.
-                    return self._hold(url, page, backoff_max)
+                    return self._hold(url, page)
                 if probing:
                     # Still refused on the cheaper route: back to the one that worked, and wait another RECHECK.
                     probing, level, state.since = False, level + 1, self.monotonic()
@@ -331,11 +329,11 @@ class Fetcher:
                     continue
                 # The dearest route refuses this URL. Only it waits: the host's other URLs may still answer.
                 state.strikes = 0
-                return self._hold(url, page, backoff_max)
+                return self._hold(url, page)
 
-    def _hold(self, url: str, page: Page, backoff_max: float) -> Page:
+    def _hold(self, url: str, page: Page) -> Page:
         held = self._held.setdefault(url, _Hold())
-        held.backoff = min(max(BACKOFF_START, held.backoff * 2), backoff_max)
+        held.backoff = min(max(BACKOFF_START, held.backoff * 2), BACKOFF_MAX)
         held.until, held.status = self.monotonic() + held.backoff, page.status
         return page
 

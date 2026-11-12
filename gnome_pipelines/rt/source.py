@@ -278,7 +278,7 @@ class RtContext:
         return interval
 
     def _feed(self, outlet: Outlet, url: str):
-        return self.fetcher.get(url, via=outlet.via, kind="feed", valid=is_listing, backoff_max=outlet.backoff_max)
+        return self.fetcher.get(url, via=outlet.via, kind="feed", valid=is_listing)
 
     def fast_run(self, outlet: Outlet):
         def run(now: datetime) -> list[Article]:
@@ -618,7 +618,7 @@ class RtReviewsSource(PollingSource[RtReviewsParams]):
             if o.fast:
                 tasks.append(Task(f"{o.name}.fast", ctx.feed_every(o, o.fast_every, ZENROWS_FEED_EVERY),
                                   ctx.fast_run(o), lane,
-                                  alert=TaskAlert(o.feed_alert_after or FEED_ALERT_AFTER, f"{o.name}'s news feed")))
+                                  alert=TaskAlert(FEED_ALERT_AFTER, f"{o.name}'s news feed")))
             if o.archive is not None or o.index is not None:
                 tasks.append(Task(f"{o.name}.archive", ctx.feed_every(o, o.archive_every, ZENROWS_ARCHIVE_EVERY),
                                   ctx.archive_run(o), lane,

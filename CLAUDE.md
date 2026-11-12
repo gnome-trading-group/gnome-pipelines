@@ -48,7 +48,7 @@ cd cdk && npm ci && npx cdk synth
   `auto` = plain then both), the cheapest that works remembered per host and page `kind`: 3 refusals in a row (401/403/407,
   ZenRows' 4xx, or a 200 the caller's `valid` rejects) step up one route, a 429/5xx/402 is transient and moves
   nothing, ZenRows' 400 (it can't fetch the site) steps up at once and its REQS001 (domain forbidden) keeps the host
-  plain for 6 h, a cheaper try after 6 h, a backoff of the one URL (5 min doubling to 1 h, or to the caller's `backoff_max`) when even the dearest route
+  plain for 6 h, a cheaper try after 6 h, a backoff of the one URL (5 min doubling to 1 h) when even the dearest route
   refuses it (the host's other URLs carry on), a pause (1 min doubling to 10) after 3 failed connections to ZenRows
   in a row, plain as a free fallback when credits run out; a ZenRows refusal's row carries its error code; ZenRows is
   paid only for its 200s (a bot wall it answers with a 200 is billed), within a `ZenRowsBudget` of which one host and
@@ -72,8 +72,7 @@ cd cdk && npm ci && npx cdk synth
   fetch has a page check (`is_listing`, `is_review_page`, `is_rt_page`, the search page), so a 200 bot wall counts as
   a refusal; an RT page without counts yet is a real answer (user's decision 2026-11-11; never RT's gated review
   API). ZenRows credits spent today are read back from `poll_health` on start. Alerts (to Slack): a news feed 15 min
-  without a success (an outlet's `feed_alert_after`: The Times 1 h, its feeds walled half the time; its refusals wait
-  a fixed 5 min via `backoff_max`), an archive tier 1 h, `films` 30 min, `tomatometer` 20 min; the `checks` lane each minute: an
+  without a success, an archive tier 1 h, `films` 30 min, `tomatometer` 20 min; the `checks` lane each minute: an
   outlet's review pages unread after 4 tries, Claude out 15 min, ZenRows at 80% (WARNING) or spent (ERROR). Tables in
   `datasets/rt.py`; discovery and read lags per outlet in `poll_health`. Research code: `~/gnome-research-work/rt/`.
 - `hltv_cs2/`: `hltv_cs2`, daily 06:00 UTC. HLTV matches, stats, veto, h2h, rankings, then rebuilds `cs2_match_priors`.

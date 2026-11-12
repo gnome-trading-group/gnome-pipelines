@@ -8,7 +8,7 @@ from gnomepy.data import CatalogConfig, DatasetStore
 from gnome_pipelines.datasets.rt import RT_ARTICLES, RT_FILMS, RT_REVIEWS, RT_SCORES
 from gnome_pipelines.polling.alerts import Alerts
 from gnome_pipelines.polling.claude import Unavailable
-from gnome_pipelines.polling.fetch import BACKOFF_MAX, BACKOFF_START, Page, ZenRowsBudget
+from gnome_pipelines.polling.fetch import Page, ZenRowsBudget
 from gnome_pipelines.polling.health import PollHealth
 from gnome_pipelines.polling.service import Service, Task
 from gnome_pipelines.polling.writer import TableWriter
@@ -41,7 +41,7 @@ class Web:
     def route(self, url, via, kind=""):
         return self.routes.get(url.split("/")[2], "plain")
 
-    def get(self, url, via="plain", archive=False, valid=None, kind="", conditional=True, backoff_max=None):
+    def get(self, url, via="plain", archive=False, valid=None, kind="", conditional=True):
         self.calls.append((url, via, archive))
         status, body = self.pages.get(url, (404, ""))
         if callable(body):
@@ -337,7 +337,7 @@ def test_a_films_pass_makes_at_most_a_few_rt_searches(env):
     searches = []
 
     class Counting(Web):
-        def get(self, url, via="plain", archive=False, valid=None, kind="", conditional=True, backoff_max=None):
+        def get(self, url, via="plain", archive=False, valid=None, kind="", conditional=True):
             if kind == "search":
                 searches.append(url)
             return super().get(url, via, archive, valid, kind, conditional)
@@ -366,17 +366,14 @@ def test_the_source_wires_lanes_per_outlet_and_needs_zenrows_for_the_tomatometer
     store, writer, health, rows = env
     monkeypatch.setattr("gnome_pipelines.rt.source.dataset_store", lambda: store)
     monkeypatch.setattr("gnome_pipelines.rt.source.page_archive", lambda: None)
-    params = RtReviewsParams(claude=False, outlets=["variety", "empire", "thetimes"], zenrows_daily_credits=0)
+    params = RtReviewsParams(claude=False, outlets=["variety", "empire"], zenrows_daily_credits=0)
     svc = RtReviewsSource().build(params, health, writer, Recorded())
     lanes = {t.name: t.lane for t in svc.tasks}
     assert lanes == {"films": "films", "checks": "checks", "variety.fast": "outlet:variety",
                      "variety.archive": "outlet:variety", "variety.read": "outlet:variety",
-                     "empire.archive": "outlet:empire", "empire.read": "outlet:empire",
-                     "thetimes.fast": "outlet:thetimes", "thetimes.archive": "outlet:thetimes",
-                     "thetimes.read": "outlet:thetimes"}
+                     "empire.archive": "outlet:empire", "empire.read": "outlet:empire"}
     alerted = {t.name: t.alert.after for t in svc.tasks if t.alert}
-    assert alerted == {"films": 1800.0, "variety.fast": 900.0, "variety.archive": 3600.0, "empire.archive": 3600.0,
-                       "thetimes.fast": 3600.0, "thetimes.archive": 3600.0}, "The Times' feed is often walled"
+    assert alerted == {"films": 1800.0, "variety.fast": 900.0, "variety.archive": 3600.0, "empire.archive": 3600.0}
     assert svc.alerts is not None
     assert any("Tomatometer is off" in r["detail"] for r in rows)
 
@@ -385,7 +382,7 @@ def test_feeds_and_pages_are_fetched_as_separate_kinds_and_rt_through_zenrows_wi
     seen = []
 
     class Recording(Web):
-        def get(self, url, via="plain", archive=False, valid=None, kind="", conditional=True, backoff_max=None):
+        def get(self, url, via="plain", archive=False, valid=None, kind="", conditional=True):
             seen.append((url.split("/")[2], via, kind, valid is not None))
             return super().get(url, via, archive, valid, kind, conditional)
     ctx = context(env, Recording(venue_pages()), Reader())
@@ -508,10 +505,10 @@ def test_the_tomatometer_fails_when_no_film_page_could_be_read(env):
 def test_a_feed_that_needs_zenrows_is_polled_every_5_minutes_and_its_archive_every_30(env):
     web = Web({})
     ctx = context(env, web, Reader())
-    times = Outlet("thetimes", ("https://www.thetimes.com/sitemaps/news",), index="https://www.thetimes.com/sitemaps")
-    fast, archive = ctx.feed_every(times, 30.0, ZENROWS_FEED_EVERY), ctx.feed_every(times, 300.0, ZENROWS_ARCHIVE_EVERY)
+    walled = Outlet("walled", ("https://www.walled.example/sitemaps/news",), index="https://www.walled.example/sitemaps")
+    fast, archive = ctx.feed_every(walled, 30.0, ZENROWS_FEED_EVERY), ctx.feed_every(walled, 300.0, ZENROWS_ARCHIVE_EVERY)
     assert (fast(T0), archive(T0)) == (30.0, 300.0)
-    web.routes["www.thetimes.com"] = "zenrows_premium"
+    web.routes["www.walled.example"] = "zenrows_premium"
     assert (fast(T0), archive(T0)) == (300.0, 1800.0)
     dated = Outlet("nyt", archive=lambda now: ["https://www.nytimes.com/sitemaps/new/sitemap-2026-11.xml.gz"])
     web.routes["www.nytimes.com"] = "zenrows"
@@ -601,18 +598,3 @@ def test_a_film_moving_before_a_restart_is_still_read_often_after_it(env):
     again, web = films_closing(env, pages, {"moving": timedelta(days=15)})
     assert tomatometer_reads(again, web, T0 + timedelta(hours=1), 30)["moving"] == [0, 5, 10, 15, 20, 25]
 
-
-def test_an_outlet_s_feeds_wait_no_longer_than_its_backoff_max_when_refused(env):
-    waits = {}
-
-    class Recording(Web):
-        def get(self, url, via="plain", archive=False, valid=None, kind="", conditional=True, backoff_max=None):
-            waits[url] = backoff_max
-            return super().get(url, via, archive, valid, kind, conditional)
-    times = Outlet("thetimes", ("https://www.thetimes.com/sitemaps/news",), backoff_max=BACKOFF_START)
-    ctx = context(env, Recording({}), Reader(), outlets=(times, OUTLET))
-    with pytest.raises(RuntimeError):
-        ctx.fast_run(times)(T0)
-    with pytest.raises(RuntimeError):
-        ctx.fast_run(OUTLET)(T0)
-    assert waits == {"https://www.thetimes.com/sitemaps/news": BACKOFF_START, "https://variety.com/feed/": BACKOFF_MAX}

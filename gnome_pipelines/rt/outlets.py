@@ -15,8 +15,6 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Callable
 
-from gnome_pipelines.polling.fetch import BACKOFF_MAX, BACKOFF_START
-
 ARCHIVE_EVERY = 300.0
 FAST_EVERY = 30.0
 # Fast feeds no cache holds for minutes are polled this often; a feed its CDN keeps for 5-30 minutes changes only when
@@ -45,10 +43,6 @@ class Outlet:
     via: str = "auto"
     fast_every: float = FAST_EVERY
     archive_every: float = ARCHIVE_EVERY
-    # The longest a feed every route refuses waits before it's asked again (the wait doubles up to it), and how long
-    # its news feed may go without a success before it alerts (None: the source's default).
-    backoff_max: float = BACKOFF_MAX
-    feed_alert_after: float | None = None
 
 
 def _months(now: datetime) -> list[datetime]:
@@ -104,11 +98,6 @@ OUTLETS = (
     Outlet("screenrant", ("https://screenrant.com/post_google_news.xml",), index="https://screenrant.com/sitemap.xml"),
     Outlet("denofgeek", ("https://www.denofgeek.com/feed/",), index="https://www.denofgeek.com/sitemap_index.xml"),
     Outlet("standard", ("https://www.standard.co.uk/rss",), index="https://www.standard.co.uk/sitemap.xml"),
-    # ZenRows' premium proxy gets The Times' bot check about half the time, a page at random: a refusal waits the
-    # usual 5 minutes rather than doubling, and a run of them is normal, so it alerts after an hour without a success.
-    Outlet("thetimes", ("https://www.thetimes.com/sitemaps/news",),
-           lambda now: [f"https://www.thetimes.com/sitemaps/articles/{now:%Y}"], backoff_max=BACKOFF_START,
-           feed_alert_after=3600.0),
     Outlet("nypost", ("https://nypost.com/news-sitemap.xml",), lambda now: [f"https://nypost.com/sitemap-{now:%Y}.xml"]),
     Outlet("chicagotribune", index="https://www.chicagotribune.com/sitemap.xml"),
     Outlet("austinchronicle", ("https://www.austinchronicle.com/news-sitemap.xml",),
