@@ -8,7 +8,10 @@
   the fetcher remembers the cheapest route that works: ESCALATE_AFTER refusals in a row (a 401/403/407, ZenRows' own
   4xx, or a 200 the caller's `valid` rejects) move it up one route; a 429 or 5xx is transient and moves nothing;
   after RECHECK it tries one route cheaper again; when even the dearest route refuses, it stops asking for a backoff
-  (BACKOFF_START doubling to BACKOFF_MAX) instead of paying every poll. ZenRows is paid only for answers it bills (a
+  (BACKOFF_START doubling to BACKOFF_MAX) instead of paying every poll. ZenRows' 400 says it can't fetch the site at
+  all, so it steps up (or backs off) at once rather than after ESCALATE_AFTER. Connections to ZenRows failing
+  CONN_FAILURES in a row (its API dropping them) pause that host's ZenRows fetches for CONN_BACKOFF_START, doubling to
+  CONN_BACKOFF_MAX. A ZenRows refusal's fetched_pages row carries ZenRows' own error code and title. ZenRows is paid only for answers it bills (a
   200), within a daily credit budget of which no host and page kind may take more than HOST_SHARE; the key is
   gnome/pipelines/zenrows (or ZENROWS_API_KEY).
 - With archive=True a changed page's body is kept once, gzipped, under s3://<research bucket>/<source>/pages/ by the
@@ -20,6 +23,7 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import json
 import threading
 import time
 from collections import defaultdict
@@ -55,6 +59,9 @@ ESCALATE_AFTER = 3
 RECHECK = 6 * 3600.0
 BACKOFF_START = 300.0
 BACKOFF_MAX = 3600.0
+CONN_FAILURES = 3
+CONN_BACKOFF_START = 60.0
+CONN_BACKOFF_MAX = 600.0
 # The most of a day's ZenRows credits one host and page kind may spend, so one can't starve the rest.
 HOST_SHARE = 0.4
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) " \
@@ -168,6 +175,18 @@ class _Route:
     blocked_until: float = 0.0
     backoff: float = 0.0
     last_status: int = 0
+    conn_failures: int = 0
+    conn_backoff: float = 0.0
+    conn_blocked_until: float = 0.0
+
+
+def _zenrows_reason(response: requests.Response) -> str:
+    """ZenRows' error code and title ("REQS004 Target blocked"), else the start of its answer."""
+    try:
+        body = json.loads(response.text)
+        return f"{body.get('code', '')} {body.get('title') or body.get('detail') or ''}".strip()[:300]
+    except (ValueError, AttributeError):
+        return response.text[:300]
 
 
 def _check_text(response: requests.Response) -> str:
@@ -223,6 +242,8 @@ class Fetcher:
             if state.blocked_until > now:
                 return Page(url, state.last_status, None, self.clock(), changed=False, route=routes[state.level],
                             refused=True)
+            if state.conn_blocked_until > now and routes[state.level] in ZENROWS_CREDITS:
+                return Page(url, 0, None, self.clock(), changed=False, route=routes[state.level], transient=True)
             level = state.level
             probing = level > 0 and now - state.since > RECHECK
             if probing:
@@ -242,6 +263,16 @@ class Fetcher:
                         response, elapsed = self._attempt(host, url, "plain", (host, kind), conditional)
                         return self._page(url, "plain", response, elapsed, archive, valid, conditional)
                     raise
+                except Exception:
+                    if route in ZENROWS_CREDITS:
+                        state.conn_failures += 1
+                        if state.conn_failures >= CONN_FAILURES:
+                            state.conn_failures = 0
+                            state.conn_backoff = min(max(CONN_BACKOFF_START, state.conn_backoff * 2), CONN_BACKOFF_MAX)
+                            state.conn_blocked_until = self.monotonic() + state.conn_backoff
+                    raise
+                if route in ZENROWS_CREDITS:
+                    state.conn_failures, state.conn_backoff = 0, 0.0
                 tried_plain = tried_plain or route == "plain"
                 page = last = self._page(url, route, response, elapsed, archive, valid, conditional)
                 state.last_status = page.status
@@ -256,7 +287,8 @@ class Fetcher:
                     # Still refused on the cheaper route: back to the one that worked, and wait another RECHECK.
                     probing, level, state.since = False, level + 1, self.monotonic()
                     continue
-                state.strikes += 1
+                # ZenRows' 400 is its own "can't fetch this site", not a block that may pass: step at once.
+                state.strikes = ESCALATE_AFTER if route != "plain" and page.status == 400 else state.strikes + 1
                 if state.strikes < ESCALATE_AFTER:
                     return page
                 state.strikes = 0
@@ -306,8 +338,10 @@ class Fetcher:
             transient = status in TRANSIENT
             refused = not transient and (status in REFUSED or (route != "plain" and 400 <= status < 500
                                                                 and status not in NOT_THERE))
-            self._log(url, route, status, elapsed=elapsed,
-                      error="refused" if refused else "transient" if transient else None)
+            error = "refused" if refused else "transient" if transient else None
+            if error and route in ZENROWS_CREDITS:
+                error = f"{error}: {_zenrows_reason(response)}"
+            self._log(url, route, status, elapsed=elapsed, error=error)
             return Page(url, status, None, at, changed=False, route=route, refused=refused, transient=transient)
         body = response.content
         if valid is not None and not valid(_check_text(response)):

@@ -74,6 +74,9 @@ TOMATOMETER_ALERT_AFTER = 1200.0
 CLAUDE_ALERT_AFTER = timedelta(minutes=15)
 ZENROWS_WARN = 0.8
 CHECKS_EVERY = 60.0
+# A feed that needs ZenRows is polled at most this often: its news feed, and its archive tier.
+ZENROWS_FEED_EVERY = 300.0
+ZENROWS_ARCHIVE_EVERY = 1800.0
 # An article listed this long before the run started is backlog: read after anything new, and left out of lag stats.
 BACKLOG = timedelta(hours=1)
 LOCAL_PAGES = Path.home() / ".cache" / "gnome-pipelines" / "rt_pages"
@@ -240,6 +243,16 @@ class RtContext:
             if film is not None:
                 out.append(Article(url, film.film_id, film.title, outlet.name, feed, when, outlet.via))
         return out
+
+    def feed_every(self, outlet: Outlet, every: float, through_zenrows: float):
+        """A feed's interval: `every`, or at least `through_zenrows` while the outlet's feeds need ZenRows (a 30 s
+        poll on its premium proxy would be ~29k credits a day)."""
+        def interval(now: datetime) -> float:
+            url = outlet.fast[0] if outlet.fast else outlet.index or next(iter(outlet.archive(now)), None)
+            if url is None or self.fetcher.route(url, outlet.via, "feed") == "plain":
+                return every
+            return max(every, through_zenrows)
+        return interval
 
     def _feed(self, outlet: Outlet, url: str):
         return self.fetcher.get(url, via=outlet.via, kind="feed", valid=is_listing)
@@ -478,7 +491,8 @@ class RtContext:
 
 def _status(page: Page) -> str:
     if page.status == 0:
-        return "skipped: the host refuses every route, backing off"
+        return ("skipped: connections to ZenRows keep failing, backing off" if page.transient
+                else "skipped: the host refuses every route, backing off")
     return f"HTTP {page.status}{' (refused)' if page.refused else ''}{' (transient)' if page.transient else ''}"
 
 
@@ -529,10 +543,11 @@ class RtReviewsSource(PollingSource[RtReviewsParams]):
         for o in outlets:
             lane = f"outlet:{o.name}"
             if o.fast:
-                tasks.append(Task(f"{o.name}.fast", lambda now, o=o: o.fast_every, ctx.fast_run(o), lane,
-                                  alert=TaskAlert(FEED_ALERT_AFTER, f"{o.name}'s news feed")))
+                tasks.append(Task(f"{o.name}.fast", ctx.feed_every(o, o.fast_every, ZENROWS_FEED_EVERY),
+                                  ctx.fast_run(o), lane, alert=TaskAlert(FEED_ALERT_AFTER, f"{o.name}'s news feed")))
             if o.archive is not None or o.index is not None:
-                tasks.append(Task(f"{o.name}.archive", lambda now, o=o: o.archive_every, ctx.archive_run(o), lane,
+                tasks.append(Task(f"{o.name}.archive", ctx.feed_every(o, o.archive_every, ZENROWS_ARCHIVE_EVERY),
+                                  ctx.archive_run(o), lane,
                                   alert=TaskAlert(max(ARCHIVE_ALERT_AFTER, 2 * o.archive_every),
                                                   f"{o.name}'s archive sitemaps")))
             tasks.append(Task(f"{o.name}.read", lambda now: READ_EVERY, ctx.read_run(o), lane))

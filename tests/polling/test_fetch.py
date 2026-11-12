@@ -1,12 +1,14 @@
 import gzip
+import json
 import threading
 from datetime import datetime, timezone
 
 import pytest
 
 from gnome_pipelines.datasets.polling import FETCHED_PAGES
-from gnome_pipelines.polling.fetch import (BACKOFF_MAX, BACKOFF_START, ESCALATE_AFTER, RECHECK, ZENROWS_API, Fetcher,
-                                           LocalArchive, OverBudget, ZenRowsBudget)
+from gnome_pipelines.polling.fetch import (BACKOFF_MAX, BACKOFF_START, CONN_BACKOFF_MAX, CONN_BACKOFF_START,
+                                           CONN_FAILURES, ESCALATE_AFTER, RECHECK, ZENROWS_API, Fetcher, LocalArchive,
+                                           OverBudget, ZenRowsBudget)
 
 T0 = datetime(2026, 11, 11, 12, tzinfo=timezone.utc)
 SITE = "https://www.nytimes.com/2026/11/11/movies/x-review.html"
@@ -341,3 +343,95 @@ def test_requests_to_one_host_go_one_at_a_time(tmp_path):
     for t in threads:
         t.join()
     assert worst[0] == 1
+
+
+# --- ZenRows' own answers ------------------------------------------------------------------------------------------
+
+def zenrows_error(status, code, title):
+    return Response(status, json.dumps({"code": code, "title": title, "status": status}).encode())
+
+
+def test_zenrows_400_steps_up_at_once_and_backs_off_at_once_on_premium(tmp_path):
+    # ew.com in prod: ZenRows can't fetch it on either proxy; a 400 costs nothing but there's no point repeating it.
+    session = Session(plain=[Response(403)], basic=[zenrows_error(400, "REQS001", "Requests to this domain are forbidden")],
+                      premium=[zenrows_error(400, "REQS001", "Requests to this domain are forbidden")])
+    f, writer, budget, _ = make(tmp_path, session)
+    for _ in range(ESCALATE_AFTER):
+        f.get(SITE, via="auto")
+    assert session.routes() == ["plain"] * ESCALATE_AFTER + ["zenrows", "zenrows_premium"]
+    asked = len(session.calls)
+    assert f.get(SITE, via="auto").refused and len(session.calls) == asked, "backing off"
+    assert writer.rows[-1]["error"] == "refused: REQS001 Requests to this domain are forbidden"
+    assert budget.spent_today() == 0
+
+
+def test_a_zenrows_refusal_is_logged_with_zenrows_own_code(tmp_path):
+    session = Session(basic=[zenrows_error(422, "REQS004", "Target blocked"), zenrows_error(429, "AUTH006",
+                                                                                        "Concurrency limit reached")])
+    f, writer, _, _ = make(tmp_path, session)
+    f.get(SITE, via="zenrows")
+    f.get(SITE, via="zenrows")
+    assert [r["error"] for r in writer.rows] == ["refused: REQS004 Target blocked",
+                                                  "transient: AUTH006 Concurrency limit reached"]
+
+
+def test_a_plain_refusal_is_logged_without_a_reason(tmp_path):
+    f, writer, _, _ = make(tmp_path, Session(plain=[Response(403, b"<html>no</html>")]))
+    f.get(SITE, via="auto")
+    assert writer.rows[0]["error"] == "refused"
+
+
+# --- connections to ZenRows failing --------------------------------------------------------------------------------
+
+class Dropping(Session):
+    """ZenRows' API closing connections without an answer (prod, 2026-11-12, for ~5 min), until `fixed`."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.fixed = False
+
+    def get(self, url, headers=None, params=None, timeout=None):
+        if url == ZENROWS_API and not self.fixed:
+            self.calls.append(("dropped", params["url"], headers, params))
+            raise ConnectionError("Remote end closed connection without response")
+        return super().get(url, headers, params, timeout)
+
+
+def test_connections_to_zenrows_failing_pause_that_host_s_zenrows_fetches_then_retry(tmp_path):
+    session = Dropping(basic=[ok()])
+    f, _, budget, clock = make(tmp_path, session)
+    for _ in range(CONN_FAILURES):
+        with pytest.raises(ConnectionError):
+            f.get(SITE, via="zenrows")
+    paused = f.get(SITE, via="zenrows")
+    assert paused.status == 0 and paused.transient and not paused.ok and len(session.calls) == CONN_FAILURES
+    clock.t += CONN_BACKOFF_START + 1
+    session.fixed = True
+    assert f.get(SITE, via="zenrows").ok and budget.spent_today() == 1
+
+
+def test_the_connection_pause_doubles_while_zenrows_keeps_dropping_and_resets_once_it_answers(tmp_path):
+    session = Dropping(basic=[ok()])
+    f, _, _, clock = make(tmp_path, session)
+    state = lambda: f._routes[("www.nytimes.com", "zenrows", "")]
+    pauses = []
+    for _ in range(6):
+        for _ in range(CONN_FAILURES):
+            with pytest.raises(ConnectionError):
+                f.get(SITE, via="zenrows")
+        pauses.append(state().conn_backoff)
+        clock.t = state().conn_blocked_until + 1
+    assert pauses[:2] == [CONN_BACKOFF_START, 2 * CONN_BACKOFF_START] and max(pauses) == CONN_BACKOFF_MAX
+    session.fixed = True
+    f.get(SITE, via="zenrows")
+    assert state().conn_backoff == 0.0 and state().conn_failures == 0
+
+
+def test_a_zenrows_connection_pause_never_stops_a_plain_fetch(tmp_path):
+    other = "https://www.nytimes.com/sitemaps/new/news.xml.gz"
+    session = Dropping(plain=[ok(b"<urlset/>")], basic=[ok()])
+    f, _, _, _ = make(tmp_path, session)
+    for _ in range(CONN_FAILURES):
+        with pytest.raises(ConnectionError):
+            f.get(SITE, via="zenrows", kind="page")
+    assert f.get(other, via="auto", kind="feed").ok

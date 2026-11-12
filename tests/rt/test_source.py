@@ -16,7 +16,7 @@ from gnome_pipelines.rt import films as rt_films
 from gnome_pipelines.rt.outlets import Outlet
 from gnome_pipelines.datasets.polling import POLL_HEALTH
 from gnome_pipelines.rt.source import (CLAUDE_RETRY, CREDITS_METER, NOTE_AFTER, RETRY_BASE, RETRY_MAX,
-                                       SLUG_LOOKUPS_PER_PASS,
+                                       SLUG_LOOKUPS_PER_PASS, ZENROWS_ARCHIVE_EVERY, ZENROWS_FEED_EVERY,
                                        Article, RtContext, RtReviewsParams, RtReviewsSource, credits_spent_today)
 
 T0 = datetime(2026, 11, 11, 12, tzinfo=timezone.utc)
@@ -35,6 +35,10 @@ class Web:
 
     def __init__(self, pages):
         self.pages, self.calls, self.last = pages, [], {}
+        self.routes = {}
+
+    def route(self, url, via, kind=""):
+        return self.routes.get(url.split("/")[2], "plain")
 
     def get(self, url, via="plain", archive=False, valid=None, kind="", conditional=True):
         self.calls.append((url, via, archive))
@@ -479,3 +483,16 @@ def test_the_tomatometer_fails_when_no_film_page_could_be_read(env):
     pages[RT_PAGE] = (503, "")
     with pytest.raises(RuntimeError, match="no RT film page read"):
         ctx.tomatometer_run(T0)
+
+
+def test_a_feed_that_needs_zenrows_is_polled_every_5_minutes_and_its_archive_every_30(env):
+    web = Web({})
+    ctx = context(env, web, Reader())
+    times = Outlet("thetimes", ("https://www.thetimes.com/sitemaps/news",), index="https://www.thetimes.com/sitemaps")
+    fast, archive = ctx.feed_every(times, 30.0, ZENROWS_FEED_EVERY), ctx.feed_every(times, 300.0, ZENROWS_ARCHIVE_EVERY)
+    assert (fast(T0), archive(T0)) == (30.0, 300.0)
+    web.routes["www.thetimes.com"] = "zenrows_premium"
+    assert (fast(T0), archive(T0)) == (300.0, 1800.0)
+    dated = Outlet("nyt", archive=lambda now: ["https://www.nytimes.com/sitemaps/new/sitemap-2026-11.xml.gz"])
+    web.routes["www.nytimes.com"] = "zenrows"
+    assert ctx.feed_every(dated, 600.0, ZENROWS_ARCHIVE_EVERY)(T0) == 1800.0
