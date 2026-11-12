@@ -28,6 +28,8 @@ export interface SourceTaskProps {
   tableBucketArn: string;
   registryApiKeyId: string;
   containerName: string;
+  /** The registry's alerts bus: a source alerts about its own failing checks (gnome_pipelines/polling/alerts.py). */
+  alertBusName: string;
 }
 
 /** A polling source's task definition: its family's image and runner, under a role that reads only its own
@@ -56,6 +58,10 @@ export class SourceTask extends Construct {
       actions: ["apigateway:GET"],
       resources: [`arn:aws:apigateway:${stack.region}::/apikeys/${props.registryApiKeyId}`],
     }));
+    this.taskRole.addToPolicy(new iam.PolicyStatement({
+      actions: ["events:PutEvents"],
+      resources: [`arn:aws:events:${stack.region}:${stack.account}:event-bus/${props.alertBusName}`],
+    }));
 
     // The task size here is only a default: tasks.py sizes each run from the source's declared resources.
     this.taskDefinition = new ecs.FargateTaskDefinition(this, "TaskDefinition", {
@@ -73,6 +79,7 @@ export class SourceTask extends Construct {
         PIPELINES_TABLE: props.runsTable.tableName,
         GNOME_STAGE: props.stage,
         REGISTRY_API_KEY_ID: props.registryApiKeyId,
+        ALERT_BUS_NAME: props.alertBusName,
       },
       // serve.py pushes the source's state after SIGTERM; give it time before the SIGKILL.
       stopTimeout: cdk.Duration.seconds(60),

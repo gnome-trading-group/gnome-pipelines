@@ -30,15 +30,43 @@ cd cdk && npm ci && npx cdk synth
 ## Layout
 
 - `gnome_pipelines/__init__.py`: `Pipeline[Params]`, `PipelineParams`, `Resources`, `Schedule`.
-- `families/{cs2,cfb}.py`: `PIPELINES` and polling `SOURCES` per family; one image and one task definition each.
+- `families/{cs2,cfb,alt}.py`: `PIPELINES` and polling `SOURCES` per family; one image and one task definition each.
 - `polling/`: the polling-source framework. `service.py` (`Service`, `Task`, `Meter`: one thread per lane, a task's
   lane being its name unless it names a shared one; first-seen stamping after the task returns, records handed to the
   store one lane at a time, gap/stall catch-up, retry backoff, heartbeats and hourly spend rows),
-  `health.py` (`PollHealth` → the shared `poll_health` table), `source.py` (`PollingSource[Params]`: name,
-  resources, secrets, `build()`), `serve.py` (build, run until SIGTERM, then the Service's `on_stop`; runner.py serves
+  `health.py` (`PollHealth` → the shared `poll_health` table), `alerts.py` (`Alerts`: a source's `SOURCE_DEGRADED`
+  alerts on the `gnome-alerts` bus, so Slack, fired per check name, put again hourly while open, resolved when the
+  check passes; names open kept in `s3://<research bucket>/<source>/alerts/open.json` so the next run closes them;
+  INFO/WARNING/ERROR only, never paging; a local run only logs them; a `Task(alert=TaskAlert(after, what))` alerts
+  after `after` s without a success), `source.py` (`PollingSource[Params]`: name, resources, secrets,
+  `build(params, health, writer, alerts)`), `serve.py` (build, run until SIGTERM, then the Service's `on_stop`; runner.py serves
   a source's run with it), `claude.py` (optional `ClaudeReader`: structured output, a pluggable read cache, in
-  memory by default; per-process daily cap; a spend meter). The framework keeps no state on disk: a source keeps what
-  must outlive a restart in its own tables or objects, written as it goes.
+  memory by default; per-process daily cap; a spend meter), `writer.py` (`TableWriter`: lanes `add()` rows, one thread
+  commits each table every `flush_every[table]` s, default 300; several rows for one key go in successive commits; a
+  failed commit keeps its rows, capped at 200k a table), `fetch.py` (`Fetcher`: 1 s per host, conditional GETs unless
+  `conditional=False`; routes cheapest first per `via` (`plain`; `zenrows` = basic proxy 1 credit then premium 10;
+  `auto` = plain then both), the cheapest that works remembered per host and page `kind`: 3 refusals in a row (401/403/407,
+  ZenRows' 4xx, or a 200 the caller's `valid` rejects) step up one route, a 429/5xx/402 is transient and moves
+  nothing, a cheaper try after 6 h, a backoff (5 min doubling to 1 h) when even the dearest route refuses, plain as a
+  free fallback when credits run out; ZenRows is paid only for its 200s, within a `ZenRowsBudget` of which one host and
+  kind may take 40%; `archive=True` keeps the page gzipped under
+  `s3://<research bucket>/<source>/pages/` by content hash, a `fetched_pages` row per changed page or failure). The
+  framework keeps no state on disk: a source keeps what must outlive a restart in its own tables or objects, written as
+  it goes.
+- `rt/`: `rt_reviews` (family `alt`, `source.py`) and `rt_backfill` (`backfill.py`; run it before the source first
+  starts in a stage, and it never overwrites a film the source already recorded). Lanes: `films` (Kalshi KXRT +
+  Polymarket + Polymarket US every 10 min, merged by title, closed after 3 passes missing; RT slug from RT's search,
+  at most 5 searches a pass), one per outlet in `outlets.py` (fast feed every 30 s, archive sitemap every 5-30 min,
+  then the queue: page fetched unconditionally and cached, read by `page.py`, classified by `classify.py`; an
+  unreadable page is retried with a growing delay while its film is open; with Claude unavailable the review is
+  written at once without a verdict and a second version with the verdict follows), `tomatometer` (each film closing
+  within 21 days, its RT page every 5 min). Outlets use `via="auto"`; RT pages and RT search `via="zenrows"`. Every
+  fetch has a page check (`is_listing`, `is_review_page`, `is_rt_page`, the search page), so a 200 bot wall counts as
+  a refusal; an RT page without counts yet is a real answer (user's decision 2026-11-11; never RT's gated review
+  API). ZenRows credits spent today are read back from `poll_health` on start. Alerts (to Slack): a news feed 15 min
+  without a success, an archive tier 1 h, `films` 30 min, `tomatometer` 20 min; the `checks` lane each minute: an
+  outlet's review pages unread after 4 tries, Claude out 15 min, ZenRows at 80% (WARNING) or spent (ERROR). Tables in
+  `datasets/rt.py`; discovery and read lags per outlet in `poll_health`. Research code: `~/gnome-research-work/rt/`.
 - `hltv_cs2/`: `hltv_cs2`, daily 06:00 UTC. HLTV matches, stats, veto, h2h, rankings, then rebuilds `cs2_match_priors`.
 - `hltv_rosters/`: `hltv_rosters`, daily 05:30 UTC (`mode=daily`). Roster moves and current rosters.
 - `faceit/`: `faceit_daily`, 07:30 UTC daily (after `hltv_cs2`). FACEIT history of the players in
@@ -61,7 +89,7 @@ cd cdk && npm ci && npx cdk synth
   (`state_store.py`, a local folder for local runs): the X budget object `qb_status_x_state.json` (spend and
   since_ids, merged in every 5 s and on stop with conditional writes) and one object per Claude read under `claude/`. `python -m gnome_pipelines.cfb.qb_status.service` is the laptop tool
   (`--once`, `--health`, `--load-registry`).
-- `datasets/{cs2,faceit,cfb,qb_status,polling}.py`: `TableSpec` schemas. `schema_sync.py`: the `sync-schema` logic.
+- `datasets/{cs2,faceit,cfb,qb_status,polling,rt}.py`: `TableSpec` schemas. `schema_sync.py`: the `sync-schema` logic.
 - `stores.py`, `credentials.py`, `environment.py`, `manifest.py`, `runner.py`, `cli.py`: framework.
 - `cdk/lib/stacks/data-stack.ts` (`PipelinesDataStack`): S3 Tables bucket `gnome-research-tables` (namespaces
   `research`, `artifacts`), SSM `/gnome/research/table-bucket-arn` and `/gnome/research/artifact-root`, the
@@ -84,6 +112,8 @@ cd cdk && npm ci && npx cdk synth
   but its run never ends on its own: at most one is live (a conditional `SOURCE#<name>`/`ACTIVE` item in the runs
   table), and the status Lambda starts its task again whenever it stops unasked. Sources have no schedules. An
   orchestrator observes sources through their tables, never runs them.
+- A source's own failures it can survive (a feed down, a budget spent) alert as `SOURCE_DEGRADED` (runbook in
+  gnome-registry); a crash or a failed run is the status Lambda's (`SOURCE_RESTARTED`, `PIPELINE_FAILED`).
 - Polling-source records must have a `first_seen_at` attribute (stamped by `Service` after the task returns; a task
   returning a record without one fails) beside the source's own `published_at`; readers decide on `first_seen_at`. Framework health goes to `poll_health`, never only to logs.
 - `polling/claude.py` is the only polling module that imports `anthropic`: sources without Claude run in any family
@@ -100,7 +130,8 @@ cd cdk && npm ci && npx cdk synth
 - Never add Iceberg tags, branches or `history.expire.*` properties: they break S3 Tables snapshot management for
   the whole table.
 - Secrets: `credentials.secret(name, ENV_VAR)` uses the env var locally, else `gnome/pipelines/<name>` (us-east-1).
-  Names: `zenrows`, `cfbd`, `x`, `anthropic`, `faceit` (`SECRETS` in data-stack.ts). A placeholder value `unset` fails
+  Names: `zenrows`, `cfbd`, `x`, `anthropic`, `faceit` (`SECRETS` in data-stack.ts). `rt_reviews` reads `anthropic`
+  and `zenrows` and caps ZenRows with `zenrows_daily_credits` (default 25000/UTC day). A placeholder value `unset` fails
   loudly. Set real values only with `aws secretsmanager put-secret-value --profile dev|prod`, never in code.
 - `cfb_qb_status` runs with X and Claude off when `gnome/pipelines/x` or `gnome/pipelines/anthropic` is unset, and
   says so in a `poll_health` `note` row rather than failing. It caps X spend with `x_monthly_usd` (default 60; sweeps stop at 80%)
@@ -130,8 +161,9 @@ cd cdk && npm ci && npx cdk synth
   restarts; past `task_timeout` it records a `stall`. CI's `restart-sources` step stops each running source task of the family after pushing
   `<family>-latest`, which restarts it on the new image (dev, then prod after approval); a stopped source stays
   stopped. Every restart leaves ~1 min with nothing polling, so avoid pushing a source's family during a window it
-  must not miss. Health: `poll_health` (`heartbeat` every 10 min, `spend` hourly per meter, `gap`, `stall`,
-  `hung`, `task_error`, `note`, `started`/`stopped`).
+  must not miss. Health: `poll_health` (`heartbeat` every 10 min, `spend` hourly per meter in USD, `credits`
+  hourly for ZenRows, `gap`, `stall`, `hung` (committed before the process exits), `task_error`, `note`,
+  `started`/`stopped`, and per source its own kinds such as `rt_reviews`' `discovery_lag`/`read_lag`).
 - Runs: EventBridge Scheduler (group `gnome-pipelines`, schedules named `<pipeline>.<schedule>`, UTC) or "Run" on
   the controller's Pipelines page invokes `gnome-pipelines-trigger`, which validates parameters, records a PENDING
   run in the `gnome-pipelines` table and starts one Fargate task sized by the pipeline's `Resources`. Which

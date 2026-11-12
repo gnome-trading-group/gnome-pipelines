@@ -16,6 +16,7 @@ through `gnomepy.data`; gnomepy-research holds the feature and model code these 
 | `gnome_pipelines/cs2_e12/` | `cs2_e12_fit`: the weekly e12-wide-mm series model the cs2_series sessions price from (not published on stale inputs); `cs2_e12_blend`: publishes its market blend weights from research |
 | `gnome_pipelines/cs2_round_model/` | Round win probability model training |
 | `gnome_pipelines/cfb/` | CFBD ingestion, quality checks, feature snapshots, team-week posteriors, and the `cfb_update` pipeline (family `cfb`): the season refreshed twice daily in season, its CFBD responses mirrored to `s3://<research bucket>/apicache/cfbd`. `cfb/qb_status/` is the QB status service, the `cfb_qb_status` polling source (same family; started and stopped on the Pipelines page): official reports, X, news, game-night flags and market alarms into timestamped start probabilities per team-game |
+| `gnome_pipelines/rt/` | `rt_reviews` (family `alt`): outlet reviews of films with open Rotten Tomatoes markets on Kalshi, Polymarket and Polymarket US, read and classified by Claude within about a minute of their outlet listing them, plus each film's live Tomatometer; `rt_backfill` loads the research run's Jan-Nov 2026 reviews into the same tables |
 | `gnome_pipelines/polling/` | Polling sources: alternative data on 10 s to few-minute cadences. A source is started and stopped on the Pipelines page like a pipeline, but its run lasts until stopped and is restarted whenever its task stops unasked; `serve.py` runs it. `service.py` runs a source's tasks concurrently (one thread per lane) with first-seen stamping, catch-up after stalls, retries, heartbeats and spend meters; `health.py` writes the shared `poll_health` table; `claude.py` is an optional cached, capped Claude reader. Sources keep their own durable state (QB status: `cfb/qb_status/state_store.py`, on S3) |
 | `gnome_pipelines/__init__.py` | `Pipeline[Params]`: what a pipeline declares (parameters, description, `Resources`, `Schedule`s) |
 | `gnome_pipelines/families/` | Pipeline families: each module lists the pipelines that share one image (`PIPELINES`) |
@@ -64,7 +65,8 @@ class HltvCs2Pipeline(Pipeline[HltvCs2Params]):
   parameters against the published schema, records the run in the `gnome-pipelines` table and starts one
   Fargate task in the pipeline's family's task definition, with its declared size; the runner then validates
   with the Pydantic model itself.
-  A failed run is put on the `gnome-alerts` bus as `PIPELINE_FAILED`; logs go to `/gnome-pipelines/runs`.
+  A failed run is put on the `gnome-alerts` bus as `PIPELINE_FAILED`, and a running polling source's failing checks
+  as `SOURCE_DEGRADED`; logs go to `/gnome-pipelines/runs`.
   A succeeded run is announced on the account's default EventBridge bus (source `gnome.pipelines`,
   detail-type `Pipeline Run Succeeded`, detail `{pipeline, family, run_id, code_version}`) for anything that
   should act on fresh data: gnome-launcher's cs2 scanner runs on each `cs2_upcoming` success.

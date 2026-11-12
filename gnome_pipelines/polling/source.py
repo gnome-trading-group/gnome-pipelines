@@ -12,8 +12,10 @@ import typing
 from typing import ClassVar
 
 from gnome_pipelines import PipelineParams, Resources
+from gnome_pipelines.polling.alerts import Alerts
 from gnome_pipelines.polling.health import PollHealth
 from gnome_pipelines.polling.service import Service
+from gnome_pipelines.polling.writer import TableWriter
 
 
 class PollingSource[P: PipelineParams]:
@@ -23,6 +25,8 @@ class PollingSource[P: PipelineParams]:
     resources: ClassVar[Resources] = Resources(cpu=256, memory=512)
     # Names under gnome/pipelines/; the source's task role may read these and no others.
     secrets: ClassVar[tuple[str, ...]] = ()
+    # Seconds between commits per table, for tables that can't wait the writer's default (a strategy reads them).
+    flush_every: ClassVar[dict[str, float]] = {}
 
     def __init_subclass__(cls, **kwargs) -> None:
         super().__init_subclass__(**kwargs)
@@ -30,5 +34,7 @@ class PollingSource[P: PipelineParams]:
             if typing.get_origin(base) is PollingSource:
                 cls.params_type = typing.get_args(base)[0]
 
-    def build(self, params: P, health: PollHealth) -> Service:
+    def build(self, params: P, health: PollHealth, writer: TableWriter, alerts: Alerts) -> Service:
+        """The source's Service. Rows go through `writer`; tasks with a TaskAlert alert through `alerts` (pass it to
+        the Service), and the source may fire and resolve its own checks with it."""
         raise NotImplementedError

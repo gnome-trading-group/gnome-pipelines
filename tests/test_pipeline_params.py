@@ -23,6 +23,7 @@ def test_every_pipeline_declares_its_params():
         "cs2_e12_blend": "CS2E12BlendParams",
         "cs2_upcoming": "CS2UpcomingParams",
         "cfb_update": "CfbUpdateParams",
+        "rt_backfill": "RtBackfillParams",
     }
 
 

@@ -15,9 +15,11 @@ from gnome_pipelines.cfb.qb_status.service import LANE, SOURCE, build_service, s
 from gnome_pipelines.cfb.qb_status.state_store import state_objects
 from gnome_pipelines.cfb.qb_status.store import StatusStore
 from gnome_pipelines.cfb.qb_status.x_scan import DAILY_CAP_USD, MONTHLY_USD
+from gnome_pipelines.polling.alerts import Alerts
 from gnome_pipelines.polling.health import PollHealth
 from gnome_pipelines.polling.service import Service, Task, utcnow
 from gnome_pipelines.polling.source import PollingSource
+from gnome_pipelines.polling.writer import TableWriter
 from gnome_pipelines.stores import dataset_store
 
 NEW_SEASON_MONTH = 7
@@ -44,7 +46,9 @@ class QbStatusSource(PollingSource[QbStatusParams]):
     resources = Resources(cpu=256, memory=2048)
     secrets = ("x", "anthropic")
 
-    def build(self, params: QbStatusParams, health: PollHealth) -> Service:
+    def build(self, params: QbStatusParams, health: PollHealth, writer: TableWriter, alerts: Alerts) -> Service:
+        # QB status's own tables go through StatusStore, which reads back what it writes; only its health rows use
+        # the writer, through `health`.
         season = season_for(utcnow())
         store = dataset_store()
         ctx = service_context(store, StatusStore(store), season, state_objects(), use_x=params.x,
@@ -52,6 +56,7 @@ class QbStatusSource(PollingSource[QbStatusParams]):
                               say=lambda note: health.record("note", utcnow(), note),
                               x_monthly_usd=params.x_monthly_usd, x_daily_usd=params.x_daily_usd)
         service = build_service(ctx, health)
+        service.alerts = alerts
 
         def check_season(now: datetime) -> list:
             # The run loaded one season's games and rosters at start. Left running past July 1 it would match

@@ -1,6 +1,7 @@
 """Runs one polling source until stopped: what runner.py does with a source's run, and `gnome-pipelines serve`.
 
-Builds the source's Service and runs it until SIGTERM (a stop from the Pipelines page, or CI restarting it on a new
+Builds the source's Service, with a TableWriter that commits the source's rows (and its health rows) in batches,
+and runs it until SIGTERM (a stop from the Pipelines page, or CI restarting it on a new
 image). A source keeps whatever must outlive a restart in its own tables or objects, written as it goes; the
 Service's on_stop hook is its chance for last writes. Rows it publishes are stamped <source>/<RUN_ID>, like any
 run's.
@@ -8,11 +9,18 @@ run's.
 from __future__ import annotations
 
 import signal
+import threading
 
 from gnome_pipelines import families
+from gnome_pipelines.datasets.polling import POLL_HEALTH
+from gnome_pipelines.polling.alerts import alerts_for
 from gnome_pipelines.polling.health import PollHealth
 from gnome_pipelines.polling.service import utcnow
+from gnome_pipelines.polling.writer import TableWriter
 from gnome_pipelines.stores import code_version, dataset_store
+
+# How long a hung process waits for its last rows to commit before it exits.
+HANG_FLUSH_WAIT = 10.0
 
 
 def serve(name: str, params: dict) -> None:
@@ -31,10 +39,28 @@ def serve(name: str, params: dict) -> None:
     if cls is None:
         raise ValueError(f"Unknown polling source '{name}'. Available here: {sorted(available)}")
     validated = cls.params_type.model_validate(params)
-    health = PollHealth(name, dataset_store())
+    writer = TableWriter(dataset_store().publish, every=cls.flush_every)
+    health = PollHealth(name, publish=lambda df: writer.add(POLL_HEALTH, df))
+    writer.start()
     if stop["asked"]:
+        writer.close()
         return
-    service = cls().build(validated, health)
+    try:
+        service = cls().build(validated, health, writer, alerts_for(name))
+    except Exception:
+        # What build recorded (a note, a source that was turned off) is worth keeping, even if the run fails.
+        writer.close()
+        raise
+    hang = service.on_hang
+
+    def flush_then_hang() -> None:
+        # The process is about to exit hard: commit what the writer holds (the "hung" row with it), within a limit,
+        # since the writer itself may be what hung.
+        flusher = threading.Thread(target=writer.flush, daemon=True)
+        flusher.start()
+        flusher.join(HANG_FLUSH_WAIT)
+        hang()
+    service.on_hang = flush_then_hang
     stop["service"] = service
     if stop["asked"]:
         service.stop()
@@ -43,3 +69,4 @@ def serve(name: str, params: dict) -> None:
         service.run_forever()
     finally:
         health.record("stopped", utcnow(), "SIGTERM" if stop["asked"] else "loop ended")
+        writer.close()

@@ -5,9 +5,9 @@ import pyarrow as pa
 import pytest
 from gnomepy.data import CatalogConfig, DatasetStore
 
-from gnome_pipelines.datasets import cfb, cs2, faceit, polling, qb_status
+from gnome_pipelines.datasets import cfb, cs2, faceit, polling, qb_status, rt
 
-SPECS = (*cs2.ALL, *faceit.ALL, *cfb.ALL, *qb_status.ALL, *polling.ALL)
+SPECS = (*cs2.ALL, *faceit.ALL, *cfb.ALL, *qb_status.ALL, *polling.ALL, *rt.ALL)
 
 
 def sample_value(field: pa.Field):

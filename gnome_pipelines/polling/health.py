@@ -19,7 +19,8 @@ DETAIL_CHARS = 500
 
 def health_row(source: str, kind: str, at: datetime, detail: str, value: float | None = None,
                subject: str | None = None) -> dict:
-    key = "|".join(map(str, (source, kind, pd.Timestamp(at).isoformat(), subject, detail)))
+    # The value too: two lag rows from one poll share everything else, and one key can't carry two values.
+    key = "|".join(map(str, (source, kind, pd.Timestamp(at).isoformat(), subject, detail, value)))
     return {"health_id": hashlib.sha256(key.encode()).hexdigest()[:32], "source": source, "kind": kind,
             "at": pd.Timestamp(at), "subject": subject, "value": value, "detail": detail[:DETAIL_CHARS]}
 

@@ -31,11 +31,12 @@ const TASK_INDEX = "by-task";
 // tasks.py overrides the container by this name.
 const CONTAINER_NAME = "pipeline";
 // gnome_pipelines/families/: one image and task definition each. CI pushes <family>-<sha> and <family>-latest.
-const FAMILIES = ["cs2", "cfb"];
+const FAMILIES = ["cs2", "cfb", "alt"];
 // Each family's SOURCES (gnome_pipelines/families/): a task definition and role each, keyed "source:<name>" for
 // tasks.py. tests/test_families.py checks this list against the Python declarations.
 export const POLLING_SOURCES: PollingSourceConfig[] = [
   { source: "cfb_qb_status", family: "cfb", secrets: ["x", "anthropic"] },
+  { source: "rt_reviews", family: "alt", secrets: ["anthropic", "zenrows"] },
 ];
 // The registry's alerting stack names its bus, so any service can put alerts on it without depending on that stack.
 const ALERT_BUS_NAME = "gnome-alerts";
@@ -160,6 +161,7 @@ export class RunStack extends cdk.Stack {
     const sourceTasks = POLLING_SOURCES.map((config) => new SourceTask(this, `SourceTask-${config.source}`, {
       config, stage: props.stage, repository, executionRole, logGroup, runsTable: table,
       tableBucketArn: props.tableBucketArn, registryApiKeyId, containerName: CONTAINER_NAME,
+      alertBusName: ALERT_BUS_NAME,
     }));
 
     const manifestArn = `arn:aws:ssm:${this.region}:${this.account}:parameter${MANIFEST_PATH}`;

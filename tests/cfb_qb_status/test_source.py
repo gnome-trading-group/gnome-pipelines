@@ -52,7 +52,7 @@ def built(monkeypatch, rows, seen=None, season_now=datetime(2026, 11, 11, tzinfo
     monkeypatch.setattr(qs, "utcnow", lambda: season_now)
     monkeypatch.setattr(qs, "state_objects", lambda: "the state store")
     health = PollHealth("cfb_qb_status", publish=lambda df: rows.extend(df.to_dict("records")))
-    return QbStatusSource().build(QbStatusParams(x_monthly_usd=40, x_daily_usd=2), health), seen
+    return QbStatusSource().build(QbStatusParams(x_monthly_usd=40, x_daily_usd=2), health, None, None), seen
 
 
 def test_build_hands_the_caps_and_season_to_the_context_and_notes_to_poll_health(monkeypatch):

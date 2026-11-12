@@ -28,6 +28,11 @@ cfb = [
     "anthropic (>=2.1.0,<3.0.0)",
 ]
 
+# Alternative data: rt_reviews (Claude reads the review pages).
+alt = [
+    "anthropic (>=2.1.0,<3.0.0)",
+]
+
 [project.scripts]
 gnome-pipelines = "gnome_pipelines.cli:main"
 

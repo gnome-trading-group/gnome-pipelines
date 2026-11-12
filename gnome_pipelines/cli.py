@@ -26,7 +26,7 @@ from pydantic import ValidationError
 from pydantic_core import PydanticUndefined
 
 from gnome_pipelines import families, schema_sync
-from gnome_pipelines.datasets import cfb, cs2, faceit, polling
+from gnome_pipelines.datasets import cfb, cs2, faceit, polling, rt
 from gnome_pipelines.environment import Stage
 from gnome_pipelines.polling.serve import serve as serve_source
 from gnome_pipelines.runner import execute
@@ -135,7 +135,7 @@ def serve(source: str, stage: str, param_pairs: tuple[str, ...], params_json: st
 def sync_schema(tables: tuple[str, ...], stage: str, drop_removed: bool, recreate: tuple[str, ...], do_apply: bool,
                 warehouse: Path, yes: bool) -> None:
     """Bring TABLES in line with their specs: add new columns; delete dropped ones or recreate, only when asked."""
-    specs = {spec.name: spec for spec in (*cs2.ALL, *faceit.ALL, *cfb.ALL, *polling.ALL)}
+    specs = {spec.name: spec for spec in (*cs2.ALL, *faceit.ALL, *cfb.ALL, *polling.ALL, *rt.ALL)}
     unknown = [t for t in (*tables, *recreate) if t not in specs]
     if unknown:
         raise click.BadParameter(f"no dataset spec named {', '.join(unknown)}", param_hint="TABLES")

@@ -7,7 +7,8 @@ task returns (the true capture time), then handed, one lane at a time, to the so
 it hadn't seen) and to its on_new hook. If a task takes longer than task_timeout, or the process stops being
 scheduled for a while (a laptop slept, the network stalled), a gap is recorded and every task runs again; whatever
 that finds is stamped with the wake time, never backdated. Failed tasks retry after RETRY_BASE seconds, doubling, up
-to their normal interval. step() runs every due task once on the calling thread, for tests and one-off passes.
+to their normal interval. A task with an alert (Task.alert) fires it through the source's Alerts once it has gone
+`after` seconds without a success and failed in that time, and resolves it at its next success. step() runs every due task once on the calling thread, for tests and one-off passes.
 
 A call that never returns (a socket read with no timeout, a commit that never completes) would leave its lane silent
 while heartbeats still look healthy, so a watchdog thread times every call in flight, handing its records over
@@ -26,6 +27,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Sequence
 
+from gnome_pipelines.polling.alerts import Alerts
 from gnome_pipelines.polling.health import PollHealth
 
 HEARTBEAT_EVERY = 600.0
@@ -33,8 +35,8 @@ SPEND_EVERY = 3600.0
 # How often an idle lane rechecks for a stop or a rerun, and how often the watcher looks for clock jumps.
 TICK = 1.0
 # How long stop waits, in all, for the lanes to finish the calls they are in. A source's task gets 60 s from SIGTERM
-# to exit (cdk/lib/source-task.ts), and serve still pushes its state after this.
-JOIN_TIMEOUT = 40.0
+# to exit (cdk/lib/source-task.ts), and serve still commits the writer's rows after this.
+JOIN_TIMEOUT = 35.0
 # A call running HANG_FACTOR x its timeout is taken to be hung.
 HANG_FACTOR = 3
 # How long the watchdog lets the "hung" row try to land before exiting.
@@ -48,6 +50,16 @@ def utcnow() -> datetime:
 
 
 @dataclass
+class TaskAlert:
+    """Alert (to Slack, through the alerts bus) once the task has gone `after` seconds without a success, failing in
+    that time; `what` names it for a person ("Variety's news feed")."""
+
+    after: float
+    what: str
+    severity: str = "WARNING"
+
+
+@dataclass(frozen=True)
 class Task:
     name: str
     interval: Callable[[datetime], float]
@@ -55,6 +67,7 @@ class Task:
     lane: str | None = None
     # Seconds a call may run before it is a stall (and HANG_FACTOR times that, a hang); None takes the Service's.
     timeout: float | None = None
+    alert: TaskAlert | None = None
 
     @property
     def lane_name(self) -> str:
@@ -63,11 +76,13 @@ class Task:
 
 @dataclass(frozen=True)
 class Meter:
-    """Money a source spends on a paid service, reported to poll_health hourly. basis says what usd() covers."""
+    """What a source spends on a paid service, reported to poll_health hourly as a `kind` row (USD for "spend",
+    another unit, such as ZenRows "credits", under its own kind). basis says what the value covers."""
 
     name: str
     usd: Callable[[], float]
     basis: str = "since start"
+    kind: str = "spend"
 
 
 def _keep_all(found: list) -> list:
@@ -87,17 +102,20 @@ class Service:
                  clock: Callable[[], datetime] | None = None, sleep: Callable[[float], None] = time.sleep,
                  task_timeout: float = 180.0, heartbeat_every: float = HEARTBEAT_EVERY,
                  spend_every: float = SPEND_EVERY, on_hang: Callable[[], None] = _exit_hung,
-                 on_stop: Callable[[], object] | None = None) -> None:
+                 on_stop: Callable[[], object] | None = None, alerts: Alerts | None = None) -> None:
         self.tasks, self.health, self.store_new, self.on_new = tasks, health, store_new, on_new
         self.meters, self.clock, self.sleep, self.task_timeout = tuple(meters), clock, sleep, task_timeout
         self.heartbeat_every, self.spend_every, self.on_hang = heartbeat_every, spend_every, on_hang
         # Runs once run_until's lanes have finished (or the stop deadline passed): a source's last writes.
         self.on_stop = on_stop
+        self.alerts = alerts
         # Each lane's call in flight: (task name, started, timeout); and the calls already reported as stalled.
         self.in_flight: dict[str, tuple[str, datetime, float]] = {}
         self._stalled: set[tuple[str, datetime]] = set()
         self.next_due: dict[str, datetime] = {}
         self.failures: dict[str, int] = {}
+        # When each task last succeeded (its first call, until then), for its alert.
+        self.last_ok: dict[str, datetime] = {}
         self.last_step: datetime | None = None
         self.started: datetime | None = None
         self.errors_since_beat = 0
@@ -141,6 +159,8 @@ class Service:
                 self.in_flight.pop(t.lane_name, None)
 
     def _run_and_hand_over(self, t: Task, before: datetime, now: datetime) -> bool:
+        with self._cond:
+            self.last_ok.setdefault(t.name, before)
         try:
             found = t.run(before) or []
             after = self._time(now)
@@ -157,12 +177,20 @@ class Service:
                 self._hand_over(found, after)
             with self._cond:
                 self.failures[t.name] = 0
+                self.last_ok[t.name] = after
                 self.next_due[t.name] = after + timedelta(seconds=t.interval(after))
+            if t.alert is not None and self.alerts is not None:
+                self.alerts.resolve(t.name)
             return slow
         except Exception as e:
-            self._error(now, f"{t.name}: {type(e).__name__}: {e}", t.name)
+            detail = f"{type(e).__name__}: {e}"
+            self._error(now, f"{t.name}: {detail}", t.name)
             with self._cond:
                 n = self.failures[t.name] = self.failures.get(t.name, 0) + 1
+                down = (self._time(now) - self.last_ok[t.name]).total_seconds()
+            if t.alert is not None and self.alerts is not None and down >= t.alert.after:
+                self.alerts.fire(t.name, f"{self.alerts.source}: {t.alert.what} has failed for {down / 60:.0f} min",
+                                 f"{n} failures in a row; the last: {detail}", t.alert.severity, {"task": t.name})
             retry = min(t.interval(now), self.RETRY_BASE * 2 ** (n - 1))
             with self._cond:
                 self.next_due[t.name] = self._time(now) + timedelta(seconds=retry)
@@ -215,7 +243,7 @@ class Service:
         if self.meters and (self.next_spend is None or now >= self.next_spend):
             for m in self.meters:
                 try:
-                    self.health.record("spend", now, m.basis, float(m.usd()), m.name)
+                    self.health.record(m.kind, now, m.basis, float(m.usd()), m.name)
                 except Exception as e:
                     self._error(now, f"meter {m.name}: {type(e).__name__}: {e}", m.name)
             self.next_spend = now + timedelta(seconds=self.spend_every)
