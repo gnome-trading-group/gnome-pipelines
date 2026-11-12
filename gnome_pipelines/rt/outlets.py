@@ -11,7 +11,7 @@ the soak showed NYT's article pages and the Chicago Tribune do.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Callable
 
@@ -19,6 +19,12 @@ from gnome_pipelines.polling.fetch import BACKOFF_MAX, BACKOFF_START
 
 ARCHIVE_EVERY = 300.0
 FAST_EVERY = 30.0
+# Fast feeds no cache holds for minutes are polled this often; a feed its CDN keeps for 5-30 minutes changes only when
+# that copy expires, so polling it faster only re-reads the same copy.
+FRESH_EVERY = 10.0
+FRESH_FEEDS = frozenset({"variety", "deadline", "rollingstone", "collider", "thewrap", "ign", "nyt", "ew",
+                         "screenrant", "polygon", "cbr", "movieweb", "gamesradar", "cinemablend", "avclub", "npr",
+                         "inverse", "austinchronicle"})
 # Children of a sitemap index dated within this many days are the archive tier's current period.
 RECENT_DAYS = 3
 # Words in a sitemap's file name that say it lists something other than articles (tags, authors, videos, a site's
@@ -127,6 +133,8 @@ OUTLETS = (
     Outlet("rogerebert", ("https://www.rogerebert.com/feed/",)),
     Outlet("slant", ("https://www.slantmagazine.com/feed/",)),
 )
+
+OUTLETS = tuple(replace(o, fast_every=FRESH_EVERY) if o.name in FRESH_FEEDS else o for o in OUTLETS)
 
 _DATE_PATTERNS = (r"yyyy=(\d{4})&mm=(\d{1,2})(?:&dd=(\d{1,2}))?", r"sitemap-(\d{4})\.xml\?mm=(\d{1,2})(?:&dd=(\d{1,2}))?",
                   r"/(20\d\d)/(\d{1,2})(?:/(\d{1,2}))?/?$", r"(20\d\d)-(\d\d)(?:-(\d\d))?", r"((?:19|20)\d\d)(\d\d)\.xml")

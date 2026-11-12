@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from gnome_pipelines.rt.films import (MISSES_TO_CLOSE, FilmState, Market, changed, kalshi, markets_from_row, merge,
                                       polymarket, rt_slug_from_search)
 from gnome_pipelines.rt.match import child_sitemaps, decode, entries, film_id, is_review_of
-from gnome_pipelines.rt.outlets import article_sitemaps, recent, url_date
+from gnome_pipelines.rt.outlets import FAST_EVERY, FRESH_EVERY, FRESH_FEEDS, OUTLETS, article_sitemaps, recent, url_date
 from gnome_pipelines.rt.page import facts
 from gnome_pipelines.rt.tomatometer import counts
 
@@ -151,3 +151,10 @@ def test_the_tomatometer_counts_come_from_the_page_json():
             '"audienceScore":{"likedCount":9}')
     assert counts(page) == counts(page) and (counts(page).liked, counts(page).not_liked, counts(page).score) == (45, 140, 24.0)
     assert counts("<html>Please verify you are a human</html>") is None
+
+
+def test_uncached_fast_feeds_are_polled_every_10_s_and_the_rest_every_30():
+    by_name = {o.name: o for o in OUTLETS}
+    assert FRESH_FEEDS <= set(by_name) and all(by_name[n].fast for n in FRESH_FEEDS), "a fresh feed names an outlet's"
+    assert {o.fast_every for o in OUTLETS if o.name in FRESH_FEEDS} == {FRESH_EVERY}
+    assert {o.fast_every for o in OUTLETS if o.name not in FRESH_FEEDS} == {FAST_EVERY}

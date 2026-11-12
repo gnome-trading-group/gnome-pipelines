@@ -60,7 +60,7 @@ cd cdk && npm ci && npx cdk synth
   starts in a stage, and it never overwrites a film the source already recorded). Lanes: `films` (Kalshi KXRT +
   Polymarket + Polymarket US every 10 min, merged by title, closed after 3 passes missing; `rt_films.markets` JSON lists
   every venue's strikes with the registry esids of their YES/NO sides for the session launcher; RT slug from RT's search,
-  at most 5 searches a pass), one per outlet in `outlets.py` (fast feed every 30 s, archive sitemap every 5-30 min;
+  at most 5 searches a pass), one per outlet in `outlets.py` (fast feed every 10 s where no CDN cache holds it for minutes (`FRESH_FEEDS`), else 30 s, archive sitemap every 5-30 min;
   while an outlet's feeds need ZenRows, every 5 min and 30 min instead; an index's tag, author, video and database
   children are skipped, and one sitemap failing (a timeout) never fails the pass,
   then the queue: page fetched unconditionally and cached, read by `page.py`, classified by `classify.py`; an
