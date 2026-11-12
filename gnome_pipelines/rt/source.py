@@ -42,7 +42,7 @@ from gnome_pipelines.polling.service import Meter, Service, Task, TaskAlert, utc
 from gnome_pipelines.polling.source import PollingSource
 from gnome_pipelines.polling.writer import TableWriter
 from gnome_pipelines.rt import classify as claude_read
-from gnome_pipelines.rt.films import FilmState, Venues, changed
+from gnome_pipelines.rt.films import FilmState, Venues, changed, markets_from_row
 from gnome_pipelines.rt.match import child_sitemaps, decode, entries, is_listing, is_review_of, toks
 from gnome_pipelines.rt.outlets import OUTLETS, Outlet, article_sitemaps, recent
 from gnome_pipelines.rt.page import PageFacts, facts, is_review_page
@@ -193,13 +193,18 @@ class RtContext:
         self.known: dict[str, FilmState] = {
             r.film_id: FilmState(r.film_id, r.title, _ts(r.close), bool(r.open), r.kalshi_event,
                                  tuple(int(s) for s in (r.kalshi_strikes if r.kalshi_strikes is not None else [])),
-                                 r.polymarket_event, r.polymarket_us_event, r.rt_slug, _ts(r.first_seen_at))
+                                 r.polymarket_event, r.polymarket_us_event, r.rt_slug, _ts(r.first_seen_at),
+                                 markets_from_row(getattr(r, "markets", None)))
             for r in films.itertuples(index=False)}
         self.open = {fid: f for fid, f in self.known.items() if f.open}
         self.slug_tried: dict[str, datetime] = {}
         articles, reviews = _load(store, RT_ARTICLES.name), _load(store, RT_REVIEWS.name)
-        read = set(reviews["url"]) if len(reviews) else set()
-        self.seen: set[str] = (set(articles["url"]) if len(articles) else set()) | read
+        self.seen: set[str] = (set(articles["url"]) if len(articles) else set()) | (
+            set(reviews["url"]) if len(reviews) else set())
+        # A review kept without a verdict (Claude was out when the run stopped) is read again for it: the verdict
+        # that would have followed went with the run.
+        done = reviews if reader is None or not len(reviews) else reviews[reviews["is_review"].notna()]
+        read = set(done["url"]) if len(done) else set()
         self.pending: dict[str, deque[Article]] = {o.name: deque() for o in outlets}
         # Articles seen before a restart but never read go back on their queues, after anything new.
         by_name = {o.name: o for o in outlets}
@@ -273,7 +278,7 @@ class RtContext:
         return interval
 
     def _feed(self, outlet: Outlet, url: str):
-        return self.fetcher.get(url, via=outlet.via, kind="feed", valid=is_listing)
+        return self.fetcher.get(url, via=outlet.via, kind="feed", valid=is_listing, backoff_max=outlet.backoff_max)
 
     def fast_run(self, outlet: Outlet):
         def run(now: datetime) -> list[Article]:
@@ -612,7 +617,8 @@ class RtReviewsSource(PollingSource[RtReviewsParams]):
             lane = f"outlet:{o.name}"
             if o.fast:
                 tasks.append(Task(f"{o.name}.fast", ctx.feed_every(o, o.fast_every, ZENROWS_FEED_EVERY),
-                                  ctx.fast_run(o), lane, alert=TaskAlert(FEED_ALERT_AFTER, f"{o.name}'s news feed")))
+                                  ctx.fast_run(o), lane,
+                                  alert=TaskAlert(o.feed_alert_after or FEED_ALERT_AFTER, f"{o.name}'s news feed")))
             if o.archive is not None or o.index is not None:
                 tasks.append(Task(f"{o.name}.archive", ctx.feed_every(o, o.archive_every, ZENROWS_ARCHIVE_EVERY),
                                   ctx.archive_run(o), lane,

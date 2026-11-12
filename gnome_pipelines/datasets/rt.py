@@ -24,6 +24,9 @@ RT_FILMS = TableSpec(
         pa.field("kalshi_strikes", INTS),
         pa.field("polymarket_event", pa.string()),
         pa.field("polymarket_us_event", pa.string()),
+        # JSON: every venue's open strikes, [{venue, strike, yes, no}] with the registry's exchange security ids of
+        # each strike's YES and NO sides.
+        pa.field("markets", pa.string()),
         pa.field("first_seen_at", TS),
     ]),
     key=("film_id",),

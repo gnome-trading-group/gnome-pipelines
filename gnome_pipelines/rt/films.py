@@ -1,7 +1,10 @@
 """The films with an open Rotten Tomatoes market on any venue, merged by title, and each one's RT page.
 
 Kalshi lists them as KXRT events (the film is the event's sub_title, the strikes its markets' floor_strike);
-Polymarket and Polymarket US as '"<Film>" Rotten Tomatoes Score?' events. None of the venues links the film's own RT
+Polymarket and Polymarket US as '"<Film>" Rotten Tomatoes Score?' events, a market per "at least X" strike. Each strike
+on each venue is kept as a Market with the registry's ids of its YES and NO sides, so a session launcher can find its
+listings: Kalshi '<ticker>:yes|no', Polymarket '<condition id>:<token id>', Polymarket US '<slug>:long|short'.
+None of the venues links the film's own RT
 page (Kalshi's settlement source is RT's home page), so a film's slug comes from RT's search, once: the result whose
 title is the film's and whose release year is nearest the market's close.
 """
@@ -9,7 +12,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from typing import Callable
 from urllib.parse import quote
@@ -23,8 +26,19 @@ POLYMARKET = ("https://gamma-api.polymarket.com/public-search?q=rotten%20tomatoe
 POLYMARKET_US = "https://gateway.polymarket.us/v1/search?query=rotten%20tomatoes&limit=100"
 RT_SEARCH = "https://www.rottentomatoes.com/search?search={query}"
 TITLE = re.compile(r'^\s*[“"]?(?P<title>.+?)[”"]?\s+Rotten Tomatoes [Ss]core\?\s*$')
+POLYMARKET_STRIKE = re.compile(r"\bat least (\d+)\b")
+POLYMARKET_US_STRIKE = re.compile(r"-gte(\d+)$")
 MAX_POLYMARKET_PAGES = 10
 MISSES_TO_CLOSE = 3
+
+
+@dataclass(frozen=True, order=True)
+class Market:
+    """One "at least `strike`" market of a film on one venue, by the registry's ids of its two sides."""
+    venue: str
+    strike: int
+    yes: str
+    no: str
 
 
 @dataclass
@@ -40,12 +54,19 @@ class FilmState:
     polymarket_us_event: str | None = None
     rt_slug: str | None = None
     first_seen_at: datetime | None = field(default=None, compare=False)
+    # Every venue's open strikes, sorted.
+    markets: tuple[Market, ...] = ()
 
     def row(self) -> dict:
         return {"film_id": self.film_id, "title": self.title, "rt_slug": self.rt_slug, "close": self.close,
                 "open": self.open, "kalshi_event": self.kalshi_event, "kalshi_strikes": list(self.kalshi_strikes),
                 "polymarket_event": self.polymarket_event, "polymarket_us_event": self.polymarket_us_event,
-                "first_seen_at": self.first_seen_at}
+                "markets": json.dumps([asdict(m) for m in self.markets]), "first_seen_at": self.first_seen_at}
+
+
+def markets_from_row(text) -> tuple[Market, ...]:
+    # A row written before the column existed reads as None or NaN.
+    return tuple(sorted(Market(**m) for m in json.loads(text))) if isinstance(text, str) and text else ()
 
 
 def _when(text: str | None) -> datetime | None:
@@ -59,9 +80,31 @@ def kalshi(events: list[dict]) -> list[FilmState]:
         markets = e.get("markets") or []
         closes = [_when(m.get("close_time")) for m in markets if m.get("close_time")]
         strikes = sorted({int(m["floor_strike"]) for m in markets if m.get("floor_strike") is not None})
+        listed = tuple(sorted(Market("kalshi", int(m["floor_strike"]), f"{m['ticker']}:yes", f"{m['ticker']}:no")
+                              for m in markets if m.get("floor_strike") is not None and m.get("ticker")))
         out.append(FilmState(film_id(title), title, max(closes) if closes else None, kalshi_event=e["event_ticker"],
-                             kalshi_strikes=tuple(strikes)))
+                             kalshi_strikes=tuple(strikes), markets=listed))
     return out
+
+
+def _polymarket_market(m: dict) -> Market | None:
+    strike = POLYMARKET_STRIKE.search(m.get("question") or "")
+    try:
+        outcomes, tokens = json.loads(m.get("outcomes") or "[]"), json.loads(m.get("clobTokenIds") or "[]")
+    except ValueError:
+        return None
+    if not strike or m.get("closed") or not m.get("conditionId") or sorted(outcomes) != ["No", "Yes"] or \
+            len(tokens) != 2:
+        return None
+    token = dict(zip(outcomes, tokens))
+    return Market("polymarket", int(strike[1]), f"{m['conditionId']}:{token['Yes']}", f"{m['conditionId']}:{token['No']}")
+
+
+def _polymarket_us_market(m: dict) -> Market | None:
+    strike = POLYMARKET_US_STRIKE.search(m.get("slug") or "")
+    if not strike or m.get("closed"):
+        return None
+    return Market("polymarket_us", int(strike[1]), f"{m['slug']}:long", f"{m['slug']}:short")
 
 
 def polymarket(events: list[dict], venue: str) -> list[FilmState]:
@@ -72,7 +115,9 @@ def polymarket(events: list[dict], venue: str) -> list[FilmState]:
             continue
         title = m["title"].strip()
         key = "polymarket_event" if venue == "polymarket" else "polymarket_us_event"
-        out.append(FilmState(film_id(title), title, _when(e.get("endDate")), **{key: e["slug"]}))
+        parse = _polymarket_market if venue == "polymarket" else _polymarket_us_market
+        listed = tuple(sorted(m for m in map(parse, e.get("markets") or []) if m is not None))
+        out.append(FilmState(film_id(title), title, _when(e.get("endDate")), markets=listed, **{key: e["slug"]}))
     return out
 
 
@@ -90,7 +135,8 @@ def merge(*venues: list[FilmState]) -> dict[str, FilmState]:
                 have, close=min(closes) if closes else None,
                 kalshi_event=have.kalshi_event or f.kalshi_event, kalshi_strikes=have.kalshi_strikes or f.kalshi_strikes,
                 polymarket_event=have.polymarket_event or f.polymarket_event,
-                polymarket_us_event=have.polymarket_us_event or f.polymarket_us_event)
+                polymarket_us_event=have.polymarket_us_event or f.polymarket_us_event,
+                markets=tuple(sorted(set(have.markets) | set(f.markets))))
     return merged
 
 

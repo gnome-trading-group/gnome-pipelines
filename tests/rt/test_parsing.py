@@ -1,8 +1,8 @@
 import gzip
 from datetime import datetime, timezone
 
-from gnome_pipelines.rt.films import (MISSES_TO_CLOSE, FilmState, changed, kalshi, merge, polymarket,
-                                      rt_slug_from_search)
+from gnome_pipelines.rt.films import (MISSES_TO_CLOSE, FilmState, Market, changed, kalshi, markets_from_row, merge,
+                                      polymarket, rt_slug_from_search)
 from gnome_pipelines.rt.match import child_sitemaps, decode, entries, film_id, is_review_of
 from gnome_pipelines.rt.outlets import article_sitemaps, recent, url_date
 from gnome_pipelines.rt.page import facts
@@ -71,6 +71,34 @@ def test_films_from_all_three_venues_merge_by_title():
     assert (howt.kalshi_event, howt.kalshi_strikes, howt.polymarket_event, howt.polymarket_us_event) == (
         "KXRT-HOWT", (45, 55), "how-to-rob-a-bank-rt", "t-howt")
     assert howt.close == datetime(2026, 11, 16, 15, tzinfo=timezone.utc) and set(films) == {"how-to-rob-a-bank", "ebenezer"}
+
+
+def test_each_venue_s_strikes_are_kept_with_the_registry_ids_of_their_yes_and_no_sides():
+    k = kalshi([{"event_ticker": "KXRT-VIC", "sub_title": "Victorian Psycho", "markets": [
+        {"ticker": "KXRT-VIC-60", "floor_strike": 60, "close_time": "2026-11-16T15:00:00Z"}]}])
+    pm = polymarket([{"slug": "victorian-psycho-rotten-tomatoes-score-20261116",
+                      "title": '"Victorian Psycho" Rotten Tomatoes Score?', "endDate": "2026-11-16T15:00:00Z",
+                      "markets": [
+                          {"question": 'Will "Victorian Psycho" score at least 60 on the Rotten Tomatoes Tomatometer?',
+                           "conditionId": "0xc60", "outcomes": '["Yes", "No"]', "clobTokenIds": '["111", "222"]',
+                           "closed": False},
+                          {"question": 'Will "Victorian Psycho" score at least 65 on the Rotten Tomatoes Tomatometer?',
+                           "conditionId": "0xc65", "outcomes": '["No", "Yes"]', "clobTokenIds": '["444", "333"]'},
+                          {"question": 'Will "Victorian Psycho" score at least 90 on the Rotten Tomatoes Tomatometer?',
+                           "conditionId": "0xc90", "outcomes": '["Yes", "No"]', "clobTokenIds": '["5", "6"]',
+                           "closed": True}]}], "polymarket")
+    us = polymarket([{"slug": "t-vicpsy-2026-11-16", "title": "Victorian Psycho Rotten Tomatoes Score?",
+                      "endDate": "2026-11-17T04:59:00Z",
+                      "markets": [{"slug": "rotc-t-vicpsy-2026-11-16-gte60", "closed": False},
+                                  {"slug": "rotc-t-vicpsy-2026-11-16-other"}]}], "polymarket_us")
+    film = merge(k, pm, us)["victorian-psycho"]
+    assert film.markets == (Market("kalshi", 60, "KXRT-VIC-60:yes", "KXRT-VIC-60:no"),
+                            Market("polymarket", 60, "0xc60:111", "0xc60:222"),
+                            Market("polymarket", 65, "0xc65:333", "0xc65:444"),
+                            Market("polymarket_us", 60, "rotc-t-vicpsy-2026-11-16-gte60:long",
+                                   "rotc-t-vicpsy-2026-11-16-gte60:short"))
+    assert markets_from_row(film.row()["markets"]) == film.markets
+    assert markets_from_row(None) == () and markets_from_row(float("nan")) == ()
 
 
 def test_film_states_are_recorded_when_they_change_and_once_when_they_close():

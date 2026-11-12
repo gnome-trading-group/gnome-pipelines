@@ -213,6 +213,22 @@ def test_the_backoff_doubles_up_to_its_maximum(tmp_path):
     assert gaps[0] == BACKOFF_START and gaps[1] == 2 * BACKOFF_START and max(gaps) == BACKOFF_MAX
 
 
+
+def test_a_caller_s_backoff_max_keeps_a_refused_url_s_wait_from_growing(tmp_path):
+    session = Session(premium=[Response(422)], basic=[Response(422)])
+    f, _, _, clock = make(tmp_path, session)
+    gaps = []
+    for _ in range(4):
+        before = len(session.calls)
+        while True:
+            f.get(SITE, via="zenrows", backoff_max=BACKOFF_START)
+            if len(session.calls) == before:
+                break
+            before = len(session.calls)
+        gaps.append(f._held[SITE].backoff)
+        clock.t = f._held[SITE].until + 1
+    assert gaps == [BACKOFF_START] * 4
+
 # --- coming back down ---------------------------------------------------------------------------------------------
 
 def test_after_the_recheck_period_the_next_fetch_tries_one_route_cheaper(tmp_path):
